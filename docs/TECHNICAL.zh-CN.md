@@ -37,7 +37,7 @@ VeilNode — encrypted files disguised as ordinary data.
 - `profile`：`dev`、`balanced`、`hardened` 安全档案。
 - `platform`：`SecureStore`、`DeviceBinding`、`FileProvider` 平台边界。
 - `diagnostics` / `repair`：doctor、audit、capacity、repair、migrate。
-- `api`：给 CLI、GUI 和未来移动端调用的统一 API。
+- `api`：给 CLI、GUI、移动端和 NAS 端调用的统一 API。
 
 ## 文件格式
 
@@ -55,9 +55,9 @@ password_key = Argon2id(password, salt=message_salt, profile_params)
 message_key = HKDF(vkp_i || password_key, salt=message_salt, info="veil-message-key-v2")
 ```
 
-`msg_id` 和 `message_salt` 每条消息随机。`root_vkp`、`vkp_i`、`message_key` 都不会写入载体。v2 当前会在载体内放置公开的 per-message 恢复元数据，用于在没有每条消息 `.vkp` 的情况下恢复派生路径。
+`msg_id` 和 `message_salt` 每条消息随机。`root_vkp`、`vkp_i`、`message_key` 都不会写入载体。v2 会在载体内放置接收方派生 `vkp_i` 所需的公开 per-message 恢复元数据，从而免去每条消息传递 `.vkp`。
 
-`.vpkg` 是固定客户端导入的节点包，包含公开身份、加密私钥材料、Profile、联系人、adapter 列表和完整性标签。桌面端可以生成专属包装器，也可以导入 `.vpkg`；移动端、NAS 和未来 Web/WASM 更适合固定客户端 + `.vpkg`。
+`.vpkg` 是固定客户端导入的节点包，包含公开身份、加密私钥材料、Profile、联系人、adapter 列表和完整性标签。桌面端、移动端、NAS 和 Web/WASM 都围绕固定客户端 + `.vpkg` 模型保持节点迁移一致性。
 
 `.vmsg` 是 Veil 内部消息封装格式，用于跨平台交换、调试和回归测试。它不是伪装成图片、视频、ZIP 的普通载体。
 
@@ -87,7 +87,7 @@ message_key = HKDF(vkp_i || password_key, salt=message_salt, info="veil-message-
 - BMP / 7z：尾部附加兼容路径。
 - `.vmsg`：内部裸封装。
 
-JPEG 不作为核心载体，因为有损重压缩很容易破坏隐藏数据。
+JPEG 适合作为输入 payload；核心载体优先选择 ZIP/PDF/MP4/PNG 等字节保持能力更明确的格式。
 
 ## 测试向量
 
@@ -95,4 +95,4 @@ JPEG 不作为核心载体，因为有损重压缩很容易破坏隐藏数据。
 veil-node test-vector
 ```
 
-该命令验证 v1 XChaCha20-Poly1305 兼容向量和 v2 root keypart 派生向量，是未来 Rust、Swift、Kotlin、WASM 绑定保持跨平台兼容的回归锚点。
+该命令验证 v1 XChaCha20-Poly1305 兼容向量和 v2 root keypart 派生向量，是 Rust、Swift、Kotlin、WASM 绑定保持跨平台兼容的回归锚点。

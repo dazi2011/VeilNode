@@ -49,7 +49,7 @@ struct MobileSealView: View {
   var body: some View {
     List {
       Label("Small-file seal workflow", systemImage: "lock.doc")
-      Label("Large files are desktop-first", systemImage: "desktopcomputer")
+      Label("Import carrier and payload from Files", systemImage: "folder")
     }
     .navigationTitle("Seal")
   }

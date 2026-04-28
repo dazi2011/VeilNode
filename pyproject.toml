@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veilnode-suite"
-version = "0.3.0"
+version = "0.3.1"
 description = "VeilNode Suite: encrypted files disguised as ordinary data"
 requires-python = ">=3.11"
 dependencies = [

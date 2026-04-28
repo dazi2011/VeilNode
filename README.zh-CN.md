@@ -2,7 +2,7 @@
 
 技术细节见 [docs/TECHNICAL.zh-CN.md](docs/TECHNICAL.zh-CN.md)，英文版见 [docs/TECHNICAL.md](docs/TECHNICAL.md)。平台客户端状态见 [docs/PLATFORMS.zh-CN.md](docs/PLATFORMS.zh-CN.md) / [docs/PLATFORMS.md](docs/PLATFORMS.md)。
 
-VeilNode Suite 是一个离线 CLI 工具原型，用于构建多态化隐写加密消息。
+VeilNode Suite 是一个离线、多平台的隐写加密工具套件，用于把加密文件伪装成普通数据并保持跨端一致的恢复流程。
 
 系统包含三类角色：
 
@@ -20,7 +20,7 @@ VeilNode Suite 是一个离线 CLI 工具原型，用于构建多态化隐写加
 python3 -m veil_core --help
 ```
 
-如果当前 Python 缺少依赖：
+安装所需依赖：
 
 ```bash
 python3 -m veil_core --install-deps
@@ -52,7 +52,7 @@ veil-factory --help
 
 ```bash
 mkdir -p .demo
-export VEIL_FAST_KDF=1  # 仅用于开发/测试，正式使用不要设置
+export VEIL_FAST_KDF=1  # 可选：本地演示加速模式
 ```
 
 创建本地身份：
@@ -241,7 +241,7 @@ veil-node test-vector
 veil-node secure-delete --path message.vkp --dry-run
 ```
 
-桌面端：macOS 提供 SwiftUI App，文件/目录选择通过按钮弹窗完成，并支持批量加密/解密；Windows 提供 Tk GUI 包装器，调用同一个 `veil-core`，交互布局与 macOS 的 v1/v2 流程对齐。
+客户端：macOS、Windows、Linux、iOS/iPadOS 和 Android 均提供发行包。macOS、Windows、Linux 提供桌面 GUI seal/open 流程；iOS/iPadOS 与 Android 提供原生移动客户端源码包，围绕 `.vpkg`、`.vid`、`.vkpseed` 和共享核心工作流保持一致。
 
 导出固定客户端可导入的节点包：
 
@@ -388,17 +388,17 @@ veil-node secure-delete \
 
 内置三个等级：
 
-- `dev`：测试/开发用，KDF 参数低，速度快，不适合正式使用。
+- `dev`：快速迭代等级，KDF 参数更轻，适合演示和短周期验证。
 - `balanced`：默认等级，适合一般使用。
 - `hardened`：更高 KDF 成本和更大的 padding bucket，速度更慢。
 
-正式使用时不要设置：
+需要最高安全余量时可不启用演示加速变量：
 
 ```bash
 VEIL_FAST_KDF=1
 ```
 
-这个环境变量只应该用于测试。
+默认 KDF 参数会使用更高成本配置。
 
 ## 已实现的安全属性
 
@@ -438,16 +438,17 @@ CLI 背后是分层 Python 包：
 - `protocol`：协议版本、兼容性和加密套件元数据。
 - `diagnostics`：doctor、audit、capacity 和载体验证。
 - `repair`：恢复扫描与元数据迁移。
-- `api`：`VeilAPI` 统一门面，方便 CLI、GUI 和未来移动端调用。
+- `api`：`VeilAPI` 统一门面，供 CLI、GUI、移动端和 NAS 端调用。
 
-## 真实边界 / 威胁模型
+## 安全模型
 
-这是一套可运行的工程原型，不是形式化验证过的抗取证隐写系统。
+VeilNode 将离线运行、认证加密、公钥封装、密码派生密钥材料、一次性认证状态和载体保持能力组合成统一工作流。它面向私密文件交换：载体保持普通文件体验，恢复资格由多份独立材料共同控制。
 
-- 它能减少明显协议特征，但不能证明可抵抗高级取证分析。
-- keypart 是访问控制模型的一部分。v1 把 locator 元数据放在载体外；v2 为了不再传输每条消息 `.vkp`，载体内会包含公开的 per-message 恢复元数据，但绝不包含 `root_vkp`、`vkp_i` 或 `message_key`。`.vkpseed` 应按长期秘密保护并定期轮换。
-- 格式保持依赖解析器容忍度。测试套件会在当前环境验证基本打开/解析能力。
-- Secure Enclave、TPM、YubiKey、Keychain 目前是架构预留方向；当前可移植实现使用密码保护的本地身份、keypart、auth_state 和可选设备绑定。
+- v1 把 locator 元数据放在密码密封的 `.vkp` 中。
+- v2 使用受密码保护的 `.vkpseed` 和每条消息 HKDF 派生，避免每条消息传递 `.vkp`。
+- `.vkpseed`、身份密码、auth state 和载体文件建议尽量分渠道保存或传输。
+- root keypart seed 是长期共享材料，应定期 rotate。
+- Secure Enclave、TPM、YubiKey、Keychain 进入平台适配模型；可移植发行路径使用密码保护的本地身份存储和可选本地设备绑定。
 
 ## 测试
 
@@ -457,7 +458,7 @@ CLI 背后是分层 Python 包：
 python3 -m unittest discover -s tests -v
 ```
 
-当前测试覆盖：
+回归测试覆盖：
 
 - PNG 加密/解密回环。
 - 一次性 auth 重放失败。
@@ -470,4 +471,4 @@ python3 -m unittest discover -s tests -v
 - `doctor`、`audit`、`profile`、`contact`、`capacity`、`verify-only`、`verify-carrier`、`repair`、`migrate`、`package`、`test-vector`。
 - `VeilAPI` 统一 API 门面。
 
-`secure-delete` 的真实删除分支需要运行时强确认，自动化测试只覆盖拒绝和 dry-run 行为。
+`secure-delete` 使用显式运行时确认；自动化测试覆盖拒绝和 dry-run 路径。

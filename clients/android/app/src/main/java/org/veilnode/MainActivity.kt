@@ -50,7 +50,7 @@ fun VeilNodeApp() {
     Text(
       text = when (selectedTab) {
         AppTab.Inbox -> "Import .vpkg / .vmsg via Android share sheet."
-        AppTab.Seal -> "Small-file seal workflow using shared veil-core binding."
+        AppTab.Seal -> "Seal workflow using shared veil-core binding."
         AppTab.Contacts -> "Import .vid contacts."
         AppTab.Settings -> "Android Keystore / StrongBox adapter boundary."
       },

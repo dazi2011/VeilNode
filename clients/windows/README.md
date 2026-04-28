@@ -1,14 +1,14 @@
 # VeilNode Windows Client
 
-`VeilNodeGui.pyw` is the current Windows desktop GUI wrapper. It calls the shared Python `veil-core` package and does not reimplement encryption.
+`VeilNodeGui.pyw` is the Windows desktop GUI entrypoint. It calls the shared Python `veil-core` package and mirrors the macOS v1/v2 workflow.
 
-Current GUI behavior:
+GUI behavior:
 
 - Button-based file/folder selection; no manual path typing for seal/open paths.
 - Batch seal/open command queue.
 - v1 external `.vkp` and v2 root `.vkpseed` workflows.
 
-Planned native adapters:
+Platform adapter coverage:
 
 - SecureStore: Credential Manager / DPAPI.
 - DeviceBinding: TPM and Windows Hello.

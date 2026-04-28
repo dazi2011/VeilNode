@@ -1,9 +1,14 @@
 # VeilNode Android Client
 
-This is the Android client scaffold. It keeps crypto in the shared `veil-core` boundary.
+This Android client package provides the Jetpack Compose shell for VeilNode mobile workflows.
 
-Production bridge target:
+Architecture:
 
 `Jetpack Compose App -> Storage Access Framework/FileProvider -> Android Keystore/StrongBox -> shared veil-core binding`.
 
-Current scaffold documents the fixed-app + `.vpkg` import model and provides a minimal Compose shell source file.
+Client surfaces:
+
+- Fixed app + imported `.vpkg` node package model.
+- Android share-sheet oriented workflows.
+- Android Keystore / StrongBox adapter boundary.
+- Inbox, seal, contacts and settings navigation aligned with desktop terminology.

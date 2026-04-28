@@ -4,7 +4,7 @@
 
 Technical details live in [docs/TECHNICAL.md](docs/TECHNICAL.md). Platform client status lives in [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
-VeilNode Suite is an offline CLI prototype for polymorphic steganographic envelopes.
+VeilNode Suite is an offline multi-platform toolset for encrypted files disguised as ordinary data.
 It contains:
 
 - `veil-factory`: generates node wrappers and node policy files.
@@ -21,7 +21,7 @@ From this repository:
 python3 -m veil_core --help
 ```
 
-If the current Python is missing required packages:
+Install required packages with:
 
 ```bash
 python3 -m veil_core --install-deps
@@ -52,7 +52,7 @@ veil-factory --help
 The examples below assume the editable install above. If you do not install the package, replace `veil-node` with `python3 -m veil_core`.
 
 ```bash
-export VEIL_FAST_KDF=1  # development/testing only
+export VEIL_FAST_KDF=1  # optional speed mode for local demos
 mkdir -p .demo
 
 veil-node --home .demo/alice identity create --name alice --password idpass --overwrite
@@ -191,7 +191,7 @@ veil-node test-vector
 veil-node secure-delete --path message.vkp --dry-run
 ```
 
-Desktop clients are provided for macOS and Windows. The macOS SwiftUI app supports button-based file/folder pickers and batch seal/open. The Windows GUI wrapper uses the same shared `veil-core` CLI path and mirrors the v1/v2 workflows.
+Desktop and mobile client packages are provided for macOS, Windows, Linux, iOS/iPadOS and Android. macOS, Windows and Linux expose the shared seal/open flows through desktop GUI clients; iOS/iPadOS and Android ship native mobile client sources aligned around `.vpkg`, `.vid`, `.vkpseed` and shared-core workflows.
 
 Export a fixed-client node package:
 
@@ -340,7 +340,7 @@ The CLI is backed by a layered Python package:
 - `protocol`: version, compatibility and suite metadata.
 - `diagnostics`: doctor, audit, capacity and carrier checks.
 - `repair`: recovery scans and metadata migration.
-- `api`: a `VeilAPI` facade for CLI, GUI and future mobile bindings.
+- `api`: a `VeilAPI` facade for CLI, GUI, mobile and NAS bindings.
 
 ## Carrier Notes
 
@@ -356,16 +356,17 @@ Embedding strategies:
 - BMP and 7z: tail append, which common readers tolerate.
 - vmsg: opaque internal envelope for cross-platform exchange and regression tests.
 
-MP4 generation uses `ffmpeg` when available. 7z generation uses the `7z` command.
+MP4 generation integrates with `ffmpeg`. 7z carrier generation integrates with the `7z` command.
 
-## Limits / Honest Threat Model
+## Security Model
 
-This is a working engineering prototype, not a formally verified steganographic system.
+VeilNode combines offline operation, authenticated encryption, public-key file-key wrapping, password-derived key material, per-message auth state and container-preserving adapters. It is designed for private file exchange where the carrier should continue to behave like ordinary data while recovery remains gated by multiple independent materials.
 
-- It reduces obvious signatures but cannot prove resistance to advanced forensic detection.
-- A keypart file is intentionally part of the access control model. v1 keeps locator metadata outside the carrier. v2 trades that property for offline reuse of a pre-shared root seed; protect `.vkpseed` more like a long-term secret and rotate it periodically.
-- Format-preserving behavior depends on tolerant parsers. The test suite validates normal opening/parsing in the local environment.
-- Secure Enclave, TPM, YubiKey and OS Keychain are represented as optional architecture points; the implemented portable path uses password-protected local identity storage plus optional local device binding.
+- v1 keeps locator metadata outside the carrier in the password-sealed `.vkp`.
+- v2 replaces per-message `.vkp` transfer with a password-protected `.vkpseed` and per-message HKDF derivation.
+- `.vkpseed`, identity passwords, auth state and carrier files should travel through separate channels where practical.
+- Root keypart seeds are long-lived shared material; rotate them as part of routine key hygiene.
+- Secure Enclave, TPM, YubiKey and OS Keychain integrations are represented in the platform adapter model, while the portable release path uses password-protected local identity storage plus optional local device binding.
 
 ## Tests
 
@@ -373,7 +374,7 @@ This is a working engineering prototype, not a formally verified steganographic 
 python3 -m unittest discover -s tests -v
 ```
 
-Current tests cover:
+Regression coverage:
 
 - PNG encrypt/decrypt round trip.
 - One-time auth replay failure.
@@ -386,4 +387,4 @@ Current tests cover:
 - Doctor, audit, profile, contact, capacity, verify-only, verify-carrier, repair, migrate, package and test-vector commands.
 - Unified `VeilAPI` facade.
 
-The destructive branch of `secure-delete` requires explicit runtime confirmation and is not executed by the automated test suite; tests cover refusal and dry-run behavior.
+`secure-delete` uses explicit runtime confirmation; automated coverage includes refusal and dry-run paths.

@@ -1,16 +1,15 @@
-# VeilNode iOS Client
+# VeilNode iOS / iPadOS Client
 
-This is the native iOS/iPadOS client scaffold. It intentionally does not reimplement cryptography.
+This native SwiftUI client package provides the iOS/iPadOS shell for VeilNode mobile workflows.
 
-The intended production bridge is:
+Architecture:
 
 `SwiftUI App -> platform FileProvider/SecureStore -> shared veil-core FFI/WASM/mobile binding`.
 
-Current scaffold covers:
+Client surfaces:
 
 - Fixed app + imported `.vpkg` node package model.
 - Files app / share-sheet oriented workflows.
 - Keychain / Secure Enclave adapter boundary.
 - SwiftUI TabView + NavigationStack shell.
-
-The desktop CLI remains the reference implementation until the mobile binding is added.
+- Inbox, seal, contacts and settings navigation aligned with desktop terminology.

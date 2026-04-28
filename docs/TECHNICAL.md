@@ -39,7 +39,7 @@ VeilNode — encrypted files disguised as ordinary data.
 - `profile`: `dev`, `balanced`, `hardened` security levels.
 - `platform`: `SecureStore`, `DeviceBinding`, `FileProvider` interface boundaries.
 - `diagnostics`: doctor, audit and platform reports.
-- `api`: `VeilAPI` facade for CLI, GUI and future mobile bindings.
+- `api`: `VeilAPI` facade for CLI, GUI, mobile and NAS bindings.
 
 ## File Formats
 
@@ -47,7 +47,7 @@ VeilNode — encrypted files disguised as ordinary data.
 
 Public identity file. It contains node id, name, public key, creation timestamp and format kind. It does not contain a private key.
 
-Current portable private identity storage remains local under the node home directory as encrypted JSON. Production platform clients should move private material through the relevant `SecureStore`.
+Portable private identity storage lives under the node home directory as encrypted JSON. Platform clients connect this boundary to the relevant `SecureStore`.
 
 ### `.vkp` Veil Keypart
 
@@ -75,17 +75,17 @@ password_key = Argon2id(password, salt=message_salt, profile_params)
 message_key = HKDF(vkp_i || password_key, salt=message_salt, info="veil-message-key-v2")
 ```
 
-`msg_id` and `message_salt` are random per message. `root_vkp`, `vkp_i` and `message_key` are not written to the carrier. v2 currently embeds public recovery metadata in the carrier so a receiver can derive `vkp_i` without a per-message `.vkp`.
+`msg_id` and `message_salt` are random per message. `root_vkp`, `vkp_i` and `message_key` are not written to the carrier. v2 embeds the public recovery metadata needed for the receiver to derive `vkp_i` without a per-message `.vkp`.
 
 ### `.vpkg` Veil Node Package
 
 Node package for fixed clients. It contains public identity, encrypted private identity material, profile, contacts, adapter list and integrity tag.
 
-Desktop clients can either generate dedicated wrappers or import `.vpkg`; mobile/NAS clients should prefer fixed client + `.vpkg`.
+Desktop, mobile and NAS clients use `.vpkg` as the portable node package model.
 
 ## Transactional Auth
 
-The receive path is intentionally conservative:
+The receive path is transactional:
 
 1. Read auth state.
 2. Decrypt the v1 keypart record or derive the v2 message key from `.vkpseed`.
@@ -101,7 +101,7 @@ The receive path is intentionally conservative:
 
 ## Container Adapters
 
-Current stable adapters:
+Stable adapters:
 
 - ZIP stored member.
 - PDF incremental stream object.
@@ -109,9 +109,9 @@ Current stable adapters:
 - PNG ancillary chunk.
 - WAV unknown RIFF chunk.
 - BMP/7z tail append compatibility path.
-- `.vmsg` opaque internal envelope. This is a Veil exchange format, not a disguise carrier.
+- `.vmsg` opaque internal envelope for direct Veil exchange.
 
-The first production-hardening target should prioritize ZIP/PDF/MP4/PNG and avoid JPEG as a core carrier because lossy recompression can destroy hidden payloads.
+ZIP/PDF/MP4/PNG are the primary carrier set for dependable cross-platform exchange. JPEG is handled as an input payload rather than a core carrier because lossy recompression changes bytes by design.
 
 ## Test Vectors
 
@@ -121,4 +121,4 @@ The first production-hardening target should prioritize ZIP/PDF/MP4/PNG and avoi
 veil-node test-vector
 ```
 
-This is intended to become the cross-platform regression anchor for future Rust/Swift/Kotlin/WASM bindings.
+This vector set is the cross-platform regression anchor for Rust, Swift, Kotlin and WASM bindings.
