@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veilnode-suite"
+version = "0.3.0"
+description = "VeilNode Suite: encrypted files disguised as ordinary data"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=45",
+]
+
+[project.scripts]
+veil-node = "veil_core.bootstrap:bootstrap_then_main"
+veil-factory = "veil_core.bootstrap:factory_bootstrap_then_main"
+
+[tool.setuptools.packages.find]
+include = ["veil_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
