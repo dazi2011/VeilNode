@@ -7,7 +7,7 @@ struct DashboardView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("VeilNode — encrypted files disguised as ordinary data.")
+      Text("VeilNode — offline envelope encryption for ordinary carrier files.")
         .font(.title2)
         .fontWeight(.semibold)
       HStack {
@@ -34,12 +34,21 @@ struct SealView: View {
   @State private var messagePassword = ""
   @State private var rootKeypartPassword = ""
   @State private var useRootKeypart = true
+  @State private var lowSignature = true
+  @State private var signatureProfile = "balanced"
 
   var body: some View {
     Form {
       Picker("Mode", selection: $useRootKeypart) {
         Text("Root keypart v2").tag(true)
         Text("External keypart v1").tag(false)
+      }
+      .pickerStyle(.segmented)
+      Toggle("Crypto core 2.2 low-signature", isOn: $lowSignature)
+      Picker("Signature profile", selection: $signatureProfile) {
+        Text("Conservative").tag("conservative")
+        Text("Balanced").tag("balanced")
+        Text("Aggressive").tag("aggressive")
       }
       .pickerStyle(.segmented)
       FileSelectionRow(title: "Inputs", systemImage: "doc.badge.plus", value: inputSummary) {
@@ -84,7 +93,10 @@ struct SealView: View {
       let output = outputDirectory.appendingPathComponent("\(base)\(suffix).sealed.\(ext)")
       var args = ["seal", input.path, carrier.path, output.path, "--to", recipient, "--password", messagePassword]
       if useRootKeypart, let rootKeypart {
-        args += ["--root-keypart", rootKeypart.path, "--root-keypart-password", rootKeypartPassword, "--no-external-keypart"]
+        args += ["--root-keypart", rootKeypart.path, "--root-keypart-password", rootKeypartPassword, "--no-external-keypart", "--crypto-core", "2.2"]
+        if lowSignature {
+          args += ["--low-signature", "--signature-profile", signatureProfile]
+        }
       }
       return args
     }
@@ -280,6 +292,8 @@ struct SettingsView: View {
       Text("Core")
         .font(.headline)
       Text("All cryptographic operations are delegated to the shared veil-core package.")
+        .foregroundStyle(.secondary)
+      Text("Root lifecycle, Shamir backup, replay seen database, carrier audit/compare/profile, migration, and debug-only switches are available through the shared CLI.")
         .foregroundStyle(.secondary)
       ActionButton(title: "Show Profiles", systemImage: "slider.horizontal.3") {
         await log.run(["profile", "levels"])

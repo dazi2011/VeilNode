@@ -26,6 +26,8 @@ class MainActivity : ComponentActivity() {
 enum class AppTab(val title: String) {
   Inbox("Inbox"),
   Seal("Seal"),
+  Roots("Roots"),
+  Carrier("Carrier"),
   Contacts("Contacts"),
   Settings("Settings")
 }
@@ -49,10 +51,12 @@ fun VeilNodeApp() {
   ) { padding ->
     Text(
       text = when (selectedTab) {
-        AppTab.Inbox -> "Import .vpkg / .vmsg via Android share sheet."
-        AppTab.Seal -> "Seal workflow using shared veil-core binding."
-        AppTab.Contacts -> "Import .vid contacts."
-        AppTab.Settings -> "Android Keystore / StrongBox adapter boundary."
+        AppTab.Inbox -> "Open v1/v2/v2.2 envelopes with generic failure handling and replay checks."
+        AppTab.Seal -> "Seal with root_vkp, crypto_core_version 2.2, low-signature profiles, and optional decoy payloads."
+        AppTab.Roots -> "Create, inspect, rotate, retire, revoke, import, split, and recover root keyparts."
+        AppTab.Carrier -> "Audit, compare, and create carrier mimic profiles using local engineering risk scores."
+        AppTab.Contacts -> "Import .vid contacts and .vpkg node packages."
+        AppTab.Settings -> "Offline-only core boundary; Android builds must bundle the shared veil-core command surface."
       },
       modifier = Modifier.padding(padding)
     )

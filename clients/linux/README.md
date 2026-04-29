@@ -1,15 +1,12 @@
-# VeilNode Linux Client
+# Unsupported Release Target
 
-`veil-node-gui` is the Linux desktop GUI entrypoint. It calls the shared Python `veil-core` package and mirrors the Windows Tk desktop workflow.
-
-Platform adapter coverage:
-
-- SecureStore: Secret Service, GNOME Keyring, KWallet.
-- DeviceBinding: TPM2 and YubiKey.
-- Packaging: AppImage, deb, rpm, Flatpak.
-
-Run from the repository root:
+Linux GUI support has been removed from the release matrix. Use the shared CLI on Linux:
 
 ```bash
-clients/linux/veil-node-gui
+veil-node --help
+veil-node doctor
+veil-node seal ...
+veil-node open ...
 ```
+
+This legacy folder is retained only for source-history compatibility and is not packaged in new releases.

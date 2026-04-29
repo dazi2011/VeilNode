@@ -18,11 +18,13 @@ Every client should call this core instead of reimplementing cryptography per pl
 - Root keypart seed: `.vkpseed`
 - Node package: `.vpkg`
 
-The repository slogan is:
+The repository description is:
 
 ```text
-VeilNode — encrypted files disguised as ordinary data.
+VeilNode — offline envelope encryption for ordinary carrier files in high-review-pressure environments.
 ```
+
+This is an engineering goal, not an absolute security guarantee. The project uses the terms low-signature, metadata minimization, local privacy hygiene and engineering risk score. It does not claim absolute non-identifiability or immunity to investigation.
 
 ## Core Layers
 
@@ -77,11 +79,73 @@ message_key = HKDF(vkp_i || password_key, salt=message_salt, info="veil-message-
 
 `msg_id` and `message_salt` are random per message. `root_vkp`, `vkp_i` and `message_key` are not written to the carrier. v2 embeds the public recovery metadata needed for the receiver to derive `vkp_i` without a per-message `.vkp`.
 
+### Offline Envelope Crypto Core v2.2
+
+`crypto_core_version = "2.2"` is the offline envelope crypto core version. It is independent from the VeilNode Suite package version and from `root_file_version`.
+
+Root file v2 public metadata:
+
+```json
+{
+  "type": "veil-root-vkpseed",
+  "root_file_version": 2,
+  "root_id": "stable random id",
+  "root_epoch": 0,
+  "created_at": 0,
+  "rotated_at": null,
+  "valid_from": null,
+  "valid_until": null,
+  "status": "active",
+  "fingerprint": "...",
+  "prev_fingerprint": null,
+  "seal_params": {},
+  "seed_encrypted": "...",
+  "metadata_mac": "..."
+}
+```
+
+The seed is encrypted at rest. `metadata_mac` is checked after decrypting the root so tampering with epoch, status or fingerprint is rejected. `inspect` never prints the seed.
+
+v2.2 message outer metadata keeps only recovery hints and encrypted metadata fields:
+
+```json
+{
+  "protocol_family": "veil-offline-envelope",
+  "crypto_core_version": "2.2",
+  "metadata_schema_id": "...",
+  "encrypted_metadata_len": 0,
+  "encrypted_metadata_nonce": "...",
+  "encrypted_metadata_tag": "...",
+  "root_hint": "...",
+  "receiver_hint": "..."
+}
+```
+
+Inner encrypted metadata includes `msg_id`, `message_salt`, `file_hash`, `receiver_id`, `root_id`, `root_fingerprint`, `root_epoch`, KDF parameters, flags and encrypted payload recovery data. It must not contain `root_vkp`, `vkp_i` or `message_key`.
+
+Root lifecycle:
+
+- `active`: may seal and open.
+- `retired`: may open historical messages; does not seal by default.
+- `revoked`: does not seal or open by default. `open --allow-revoked-root` is an explicit local recovery override.
+
+Rotation derives a new root with HKDF using `info = b"veil-root-rotate-core-v2.2"`, increments `root_epoch` and records `prev_fingerprint`. Old roots are not deleted because old messages may require them.
+
+Replay protection uses SQLite at `<home>/state/msg_seen.db`. v2.2 writes a seen record only after decryption, hash verification and output commit succeed. `--no-replay-check` exists for tests and local debugging only.
+
+Shamir backup uses GF(256) threshold shares. A single share does not reveal the root seed; fewer than threshold shares fail recovery; mixed-root shares fail metadata and checksum validation.
+
+Decoy mode stores independently authenticated real and decoy payload layers in one carrier. Correct real credentials open the real payload; correct decoy credentials open the decoy payload; other errors use the same generic failure path. This is coercion-resistance assistance, not perfect deniable encryption.
+
+Low-signature mode is explicit (`--low-signature`) and supports conservative, balanced and aggressive profiles. It randomizes metadata ordering and carrier labels where supported and avoids fixed plaintext strings such as `VeilNode`, `veil-msg`, `root_vkp`, `vkp_i` and `message_key` in v2.2 low-signature carriers.
+
+Carrier audit/compare/profile commands produce local engineering risk scores. They do not prove that a carrier is safe or impossible to classify as unusual.
+
 ### `.vpkg` Veil Node Package
 
 Node package for fixed clients. It contains public identity, encrypted private identity material, profile, contacts, adapter list and integrity tag.
 
-Desktop, mobile and NAS clients use `.vpkg` as the portable node package model.
+Desktop and mobile clients use `.vpkg` as the portable node package model. Linux and NAS GUI clients are no longer release targets; use the CLI on those systems.
 
 ## Transactional Auth
 

@@ -27,11 +27,14 @@ class VeilNodeGui(tk.Tk):
         tabs.add(self._dashboard(tabs), text="Doctor")
         tabs.add(self._seal(tabs), text="Seal")
         tabs.add(self._open(tabs), text="Open")
+        tabs.add(self._root_tools(tabs), text="Roots")
+        tabs.add(self._carrier_tools(tabs), text="Carrier")
         tabs.add(self._contacts(tabs), text="Contacts")
+        tabs.add(self._advanced_cli(tabs), text="CLI")
 
     def _dashboard(self, parent: ttk.Notebook) -> ttk.Frame:
         frame = ttk.Frame(parent, padding=12)
-        ttk.Label(frame, text="VeilNode — encrypted files disguised as ordinary data.").pack(anchor=tk.W)
+        ttk.Label(frame, text="VeilNode — offline envelope encryption for ordinary carrier files.").pack(anchor=tk.W)
         ttk.Button(frame, text="Doctor", command=lambda: self.run(["doctor"])).pack(anchor=tk.W, pady=8)
         ttk.Button(frame, text="Test vectors", command=lambda: self.run(["test-vector"])).pack(anchor=tk.W)
         return frame
@@ -43,9 +46,14 @@ class VeilNodeGui(tk.Tk):
         cover = tk.StringVar(value="No cover selected")
         output_dir = tk.StringVar(value="No output folder selected")
         root_keypart = tk.StringVar(value="No root keypart selected")
+        carrier_profile = tk.StringVar(value="No carrier profile selected")
+        decoy_input = tk.StringVar(value="No decoy selected")
         recipient = tk.StringVar()
         message_password = tk.StringVar()
         root_password = tk.StringVar()
+        decoy_password = tk.StringVar()
+        low_signature = tk.BooleanVar(value=True)
+        signature_profile = tk.StringVar(value="balanced")
         inputs_label = tk.StringVar(value="No inputs selected")
 
         def choose_inputs() -> None:
@@ -62,14 +70,19 @@ class VeilNodeGui(tk.Tk):
 
         ttk.Radiobutton(frame, text="Root keypart v2", variable=mode, value="root").pack(anchor=tk.W)
         ttk.Radiobutton(frame, text="External keypart v1", variable=mode, value="external").pack(anchor=tk.W)
+        ttk.Checkbutton(frame, text="Use crypto core 2.2 low-signature", variable=low_signature).pack(anchor=tk.W)
+        ttk.Combobox(frame, textvariable=signature_profile, values=["conservative", "balanced", "aggressive"], state="readonly").pack(fill=tk.X, pady=(0, 8))
         self._picker_row(frame, "Inputs", inputs_label, choose_inputs)
         ttk.Button(frame, text="Add input folder", command=add_input_folder).pack(anchor=tk.W, pady=(0, 8))
         self._picker_row(frame, "Cover", cover, lambda: self._set_file(cover))
         self._picker_row(frame, "Output folder", output_dir, lambda: self._set_dir(output_dir))
         self._picker_row(frame, "Root keypart", root_keypart, lambda: self._set_file(root_keypart))
+        self._picker_row(frame, "Carrier profile", carrier_profile, lambda: self._set_file(carrier_profile))
+        self._picker_row(frame, "Decoy input", decoy_input, lambda: self._set_file(decoy_input))
         self._entry(frame, "Recipient alias", recipient)
         self._entry(frame, "Message password", message_password, show="*")
         self._entry(frame, "Root keypart password", root_password, show="*")
+        self._entry(frame, "Decoy password", decoy_password, show="*")
         ttk.Button(frame, text="Seal selected", command=lambda: self.run_many(build_seal_commands())).pack(anchor=tk.W)
 
         def build_seal_commands() -> list[list[str]]:
@@ -84,7 +97,13 @@ class VeilNodeGui(tk.Tk):
                 if mode.get() == "root":
                     if root_keypart.get().startswith("No "):
                         return []
-                    args += ["--root-keypart", root_keypart.get(), "--root-keypart-password", root_password.get(), "--no-external-keypart"]
+                    args += ["--root-keypart", root_keypart.get(), "--root-keypart-password", root_password.get(), "--no-external-keypart", "--crypto-core", "2.2"]
+                    if low_signature.get():
+                        args += ["--low-signature", "--signature-profile", signature_profile.get()]
+                    if not carrier_profile.get().startswith("No "):
+                        args += ["--carrier-profile", carrier_profile.get()]
+                    if not decoy_input.get().startswith("No "):
+                        args += ["--decoy-input", decoy_input.get(), "--decoy-password", decoy_password.get()]
                 commands.append(args)
             return commands
         return frame
@@ -97,9 +116,13 @@ class VeilNodeGui(tk.Tk):
         output_dir = tk.StringVar(value="No output folder selected")
         keypart = tk.StringVar(value="No external keypart selected")
         root_keypart = tk.StringVar(value="No root keypart selected")
+        root_store = tk.StringVar(value="No root store selected")
+        root_fingerprint = tk.StringVar()
         message_password = tk.StringVar()
         identity_password = tk.StringVar()
         root_password = tk.StringVar()
+        allow_revoked = tk.BooleanVar(value=False)
+        no_replay_check = tk.BooleanVar(value=False)
 
         def choose_messages() -> None:
             selected = filedialog.askopenfilenames(title="Choose messages to open")
@@ -112,10 +135,14 @@ class VeilNodeGui(tk.Tk):
         self._picker_row(frame, "Messages", messages_label, choose_messages)
         self._picker_row(frame, "Output folder", output_dir, lambda: self._set_dir(output_dir))
         self._picker_row(frame, "Root keypart", root_keypart, lambda: self._set_file(root_keypart))
+        self._picker_row(frame, "Root store", root_store, lambda: self._set_dir(root_store))
         self._picker_row(frame, "External keypart", keypart, lambda: self._set_file(keypart))
+        self._entry(frame, "Root fingerprint", root_fingerprint)
         self._entry(frame, "Message password", message_password, show="*")
         self._entry(frame, "Identity password", identity_password, show="*")
         self._entry(frame, "Root keypart password", root_password, show="*")
+        ttk.Checkbutton(frame, text="Allow revoked root", variable=allow_revoked).pack(anchor=tk.W)
+        ttk.Checkbutton(frame, text="No replay check (debug)", variable=no_replay_check).pack(anchor=tk.W)
         ttk.Button(frame, text="Verify selected", command=lambda: self.run_many(build_open_commands(True))).pack(anchor=tk.W, pady=(0, 8))
         ttk.Button(frame, text="Open selected", command=lambda: self.run_many(build_open_commands(False))).pack(anchor=tk.W)
 
@@ -128,9 +155,19 @@ class VeilNodeGui(tk.Tk):
                 out = str(Path(output_dir.get()) / f"{Path(message).stem}{suffix}-opened")
                 args = ["open", message, "--out", out, "--password", message_password.get(), "--identity-password", identity_password.get()]
                 if mode.get() == "root":
-                    if root_keypart.get().startswith("No "):
+                    if root_keypart.get().startswith("No ") and root_store.get().startswith("No "):
                         return []
-                    args += ["--root-keypart", root_keypart.get(), "--root-keypart-password", root_password.get()]
+                    if root_keypart.get().startswith("No "):
+                        args += ["--root-store", root_store.get()]
+                    else:
+                        args += ["--root-keypart", root_keypart.get()]
+                    if root_fingerprint.get():
+                        args += ["--root-fingerprint", root_fingerprint.get()]
+                    args += ["--root-keypart-password", root_password.get()]
+                    if allow_revoked.get():
+                        args.append("--allow-revoked-root")
+                    if no_replay_check.get():
+                        args.append("--no-replay-check")
                 else:
                     kp = keypart.get() if not keypart.get().startswith("No ") else str(Path(message).with_suffix(".vkp"))
                     args += ["--keypart", kp]
@@ -148,6 +185,54 @@ class VeilNodeGui(tk.Tk):
         self._entry(frame, "Alias", alias)
         ttk.Button(frame, text="Import", command=lambda: self.run(["contact", "import", path.get(), "--alias", alias.get()])).pack(anchor=tk.W)
         ttk.Button(frame, text="List", command=lambda: self.run(["contact", "list"])).pack(anchor=tk.W, pady=8)
+        return frame
+
+    def _root_tools(self, parent: ttk.Notebook) -> ttk.Frame:
+        frame = ttk.Frame(parent, padding=12)
+        root_path = tk.StringVar(value="No root selected")
+        out_path = tk.StringVar(value="No output selected")
+        shares_dir = tk.StringVar(value="No shares folder selected")
+        label = tk.StringVar(value="alice-bob")
+        password = tk.StringVar()
+        fingerprint = tk.StringVar()
+        self._picker_row(frame, "Root file", root_path, lambda: self._set_file(root_path))
+        self._picker_row(frame, "Output root", out_path, lambda: self._set_save_file(out_path))
+        self._picker_row(frame, "Shares folder", shares_dir, lambda: self._set_dir(shares_dir))
+        self._entry(frame, "Label", label)
+        self._entry(frame, "Root password", password, show="*")
+        self._entry(frame, "Fingerprint", fingerprint)
+        ttk.Button(frame, text="Create root", command=lambda: self.run(["keypart", "root", "create", "--out", out_path.get(), "--password", password.get(), "--label", label.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Inspect root", command=lambda: self.run(["keypart", "root", "inspect", "--in", root_path.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Rotate root", command=lambda: self.run(["keypart", "root", "rotate", "--in", root_path.get(), "--out", out_path.get(), "--password", password.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Retire root", command=lambda: self.run(["keypart", "root", "retire", "--in", root_path.get(), "--out", out_path.get(), "--password", password.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Revoke root", command=lambda: self.run(["keypart", "root", "revoke", "--in", root_path.get(), "--out", out_path.get(), "--password", password.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Import to store", command=lambda: self.run(["keypart", "root", "import", "--in", root_path.get(), "--password", password.get(), "--label", label.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="List store", command=lambda: self.run(["keypart", "root", "list"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Show root", command=lambda: self.run(["keypart", "root", "show", "--fingerprint", fingerprint.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Split 3 of 5", command=lambda: self.run(["keypart", "root", "split", "--in", root_path.get(), "--password", password.get(), "--shares", "5", "--threshold", "3", "--out-dir", shares_dir.get()])).pack(anchor=tk.W)
+        return frame
+
+    def _carrier_tools(self, parent: ttk.Notebook) -> ttk.Frame:
+        frame = ttk.Frame(parent, padding=12)
+        before = tk.StringVar(value="No before file selected")
+        after = tk.StringVar(value="No carrier selected")
+        samples = tk.StringVar(value="No samples folder selected")
+        profile = tk.StringVar(value="No profile selected")
+        self._picker_row(frame, "Before", before, lambda: self._set_file(before))
+        self._picker_row(frame, "Carrier", after, lambda: self._set_file(after))
+        self._picker_row(frame, "Samples", samples, lambda: self._set_dir(samples))
+        self._picker_row(frame, "Profile", profile, lambda: self._set_save_file(profile))
+        ttk.Button(frame, text="Audit", command=lambda: self.run(["carrier", "audit", "--input", after.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Compare", command=lambda: self.run(["carrier", "compare", "--before", before.get(), "--after", after.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Create profile", command=lambda: self.run(["carrier", "profile", "create", "--samples", samples.get(), "--out", profile.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Inspect profile", command=lambda: self.run(["carrier", "profile", "inspect", "--in", profile.get()])).pack(anchor=tk.W)
+        return frame
+
+    def _advanced_cli(self, parent: ttk.Notebook) -> ttk.Frame:
+        frame = ttk.Frame(parent, padding=12)
+        command = tk.StringVar(value="doctor")
+        self._entry(frame, "veil-node arguments", command)
+        ttk.Button(frame, text="Run", command=lambda: self.run(command.get().split())).pack(anchor=tk.W)
         return frame
 
     def _picker_row(self, frame: ttk.Frame, label: str, value: tk.StringVar, command) -> None:
@@ -168,6 +253,11 @@ class VeilNodeGui(tk.Tk):
 
     def _set_dir(self, value: tk.StringVar) -> None:
         selected = filedialog.askdirectory(mustexist=False)
+        if selected:
+            value.set(selected)
+
+    def _set_save_file(self, value: tk.StringVar) -> None:
+        selected = filedialog.asksaveasfilename()
         if selected:
             value.set(selected)
 

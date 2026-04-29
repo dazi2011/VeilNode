@@ -26,7 +26,15 @@ def main(argv: list[str] | None = None) -> None:
 def _doctor() -> dict:
     checks = [
         {"name": "python", "ok": sys.version_info >= (3, 9), "version": sys.version},
-        {"name": "protocol", "ok": True, "message": {"default": current_protocol(), "root_keypart": protocol_v2()}},
+        {
+            "name": "protocol",
+            "ok": True,
+            "message": {
+                "default": current_protocol(),
+                "root_keypart": protocol_v2(),
+                "offline_envelope_crypto_core": "2.2",
+            },
+        },
         {"name": "project-root", "ok": _project_root_present()},
         {"name": "gui-bridge", "ok": True, "message": "Lightweight GUI health path is active."},
         {"name": "note", "ok": True, "message": "Run veil-node doctor and veil-node test-vector for full dependency and crypto verification."},
@@ -34,7 +42,7 @@ def _doctor() -> dict:
     return {
         "ok": all(item["ok"] for item in checks),
         "platform": platform.platform(),
-        "protocol": {"default": current_protocol(), "root_keypart": protocol_v2()},
+        "protocol": {"default": current_protocol(), "root_keypart": protocol_v2(), "crypto_core_version": "2.2"},
         "checks": checks,
     }
 
@@ -42,7 +50,7 @@ def _doctor() -> dict:
 def _test_vector_status() -> dict:
     return {
         "ok": True,
-        "protocol": {"default": current_protocol(), "root_keypart": protocol_v2()},
+        "protocol": {"default": current_protocol(), "root_keypart": protocol_v2(), "crypto_core_version": "2.2"},
         "vectors": [
             {
                 "name": "veil-xchacha20poly1305-v1",
@@ -51,6 +59,11 @@ def _test_vector_status() -> dict:
             },
             {
                 "name": "veil-root-vkp-derivation-v2",
+                "source": "GUI bridge status; full vector verified by veil-node test-vector.",
+            },
+            {
+                "name": "veil-offline-envelope-core-v2.2-metadata",
+                "crypto_core_version": "2.2",
                 "source": "GUI bridge status; full vector verified by veil-node test-vector.",
             }
         ],

@@ -1,12 +1,11 @@
-# VeilNode NAS Client
+# Unsupported Release Target
 
-`veil-node-web.py` is the local NAS gateway entrypoint. It exposes `/health`, which runs the shared `veil-core doctor` command.
-
-Run locally:
+NAS GUI/web gateway support has been removed from the release matrix. Use the shared CLI for NAS automation:
 
 ```bash
-clients/nas/veil-node-web.py
-curl http://127.0.0.1:8765/health
+veil-node doctor
+veil-node seal ...
+veil-node open ...
 ```
 
-Deployment model: explicit storage roots, authentication, reverse proxy guidance and read-only audit mode.
+Keep root keyparts, passwords and carriers in separate storage locations. This legacy folder is retained only for source-history compatibility and is not packaged in new releases.

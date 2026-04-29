@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .contacts import ContactBook
+from .carrier_tools import carrier_audit, carrier_compare, create_carrier_profile, inspect_carrier_profile
 from .container import SUPPORTED_FORMATS
 from .diagnostics import audit as audit_home
 from .diagnostics import capacity as capacity_report
@@ -19,10 +20,19 @@ from .keypart import (
     create_root_vkp_seed,
     export_root_vkp_seed,
     import_root_vkp_seed,
+    import_root_to_store,
     inspect_root_vkp_seed,
+    list_root_store,
     open_root_vkp_seed,
+    open_root_vkp_seed_info,
+    recover_root_vkp_seed,
+    remove_root_from_store,
+    resolve_root_from_store,
     rotate_root_vkp_seed,
     seal_root_vkp_seed,
+    set_root_vkp_seed_status,
+    show_root_in_store,
+    split_root_vkp_seed,
 )
 from .message import (
     create_message,
@@ -34,10 +44,11 @@ from .message import (
     receive_message_v2,
 )
 from .nodepkg import export_nodepkg, import_nodepkg, inspect_nodepkg
-from .packaging import build_zipapp
+from .packaging import build_release_artifacts, build_zipapp
 from .permissions import home_permission_report
 from .profile import SECURITY_LEVELS, build_profile, profile_summary, write_profile
 from .repair import migrate_keypart, recovery_scan, repair_keypart
+from .replay import forget_seen, list_seen, seen_db_path, vacuum_seen
 from .safety import secure_delete
 from .testvectors import run_vectors
 
@@ -59,6 +70,7 @@ RESERVED_SUBCOMMANDS = {
     "verify-only",
     "repair",
     "migrate",
+    "carrier",
     "secure-delete",
     "package",
     "test-vector",
@@ -80,8 +92,12 @@ def main(argv: list[str] | None = None, *, default_profile: str | None = None, d
         home_path = args.home
     try:
         result = _dispatch(args, policy, Path(home_path))
-    except VeilDecryptError:
-        print(random.choice(policy.get("receive_failure_messages") or ["operation failed"]), file=sys.stderr)
+    except VeilDecryptError as exc:
+        if getattr(args, "debug_reason", False):
+            reason = exc.__cause__ or exc
+            print(f"Unable to open message. debug_reason={reason}", file=sys.stderr)
+        else:
+            print("Unable to open message.", file=sys.stderr)
         raise SystemExit(2)
     except VeilError as exc:
         print(str(exc), file=sys.stderr)
@@ -144,7 +160,18 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     send.add_argument("--device-bind", action="store_true")
     send.add_argument("--root-keypart")
     send.add_argument("--root-keypart-password")
+    send.add_argument("--root-label")
+    send.add_argument("--root-fingerprint")
+    send.add_argument("--root-store")
     send.add_argument("--no-external-keypart", action="store_true")
+    send.add_argument("--crypto-core", choices=["2", "2.2"], default="2")
+    send.add_argument("--low-signature", action="store_true")
+    send.add_argument("--signature-profile", choices=["conservative", "balanced", "aggressive"], default="balanced")
+    send.add_argument("--carrier-profile")
+    send.add_argument("--work-dir")
+    send.add_argument("--keep-temp-debug", action="store_true")
+    send.add_argument("--redact-logs", action="store_true", default=True)
+    send.add_argument("--no-redact-logs", action="store_true")
 
     seal = sub.add_parser("seal", help="VeilNode positional send: seal INPUT COVER OUTPUT --to CONTACT")
     seal.add_argument("input")
@@ -158,7 +185,21 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     seal.add_argument("--device-bind", action="store_true")
     seal.add_argument("--root-keypart")
     seal.add_argument("--root-keypart-password")
+    seal.add_argument("--root-label")
+    seal.add_argument("--root-fingerprint")
+    seal.add_argument("--root-store")
     seal.add_argument("--no-external-keypart", action="store_true")
+    seal.add_argument("--crypto-core", choices=["2", "2.2"], default="2")
+    seal.add_argument("--low-signature", action="store_true")
+    seal.add_argument("--signature-profile", choices=["conservative", "balanced", "aggressive"], default="balanced")
+    seal.add_argument("--carrier-profile")
+    seal.add_argument("--decoy-input")
+    seal.add_argument("--decoy-password")
+    seal.add_argument("--decoy-pad-match", choices=["real", "fixed", "random"], default="real")
+    seal.add_argument("--work-dir")
+    seal.add_argument("--keep-temp-debug", action="store_true")
+    seal.add_argument("--redact-logs", action="store_true", default=True)
+    seal.add_argument("--no-redact-logs", action="store_true")
 
     receive = sub.add_parser("receive", aliases=_alias(aliases, "receive"), help="recover a message")
     receive.add_argument(*_opts(policy, "input", "--input", "-i"), dest="input", required=True)
@@ -168,6 +209,8 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     receive.add_argument(*_opts(policy, "password", "--password", "-p"), dest="password")
     receive.add_argument("--identity-password")
     receive.add_argument("--verify-only", action="store_true", help="decrypt and verify without writing output or consuming auth")
+    receive.add_argument("--no-replay-check", action="store_true")
+    receive.add_argument("--debug-reason", action="store_true")
 
     open_cmd = sub.add_parser("open", help="VeilNode positional receive: open MESSAGE --keypart FILE --out DIR")
     open_cmd.add_argument("input")
@@ -175,10 +218,15 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     open_cmd.add_argument("--keypart", "-k")
     open_cmd.add_argument("--root-keypart")
     open_cmd.add_argument("--root-keypart-password")
+    open_cmd.add_argument("--root-store")
+    open_cmd.add_argument("--root-fingerprint")
     open_cmd.add_argument("--auth-state", "-a")
     open_cmd.add_argument("--password", "-p")
     open_cmd.add_argument("--identity-password")
     open_cmd.add_argument("--verify-only", action="store_true")
+    open_cmd.add_argument("--allow-revoked-root", action="store_true")
+    open_cmd.add_argument("--no-replay-check", action="store_true")
+    open_cmd.add_argument("--debug-reason", action="store_true")
 
     keypart = sub.add_parser("keypart", aliases=_alias(aliases, "keypart"), help="manage opaque keypart files")
     keypart_sub = keypart.add_subparsers(dest="keypart_command", required=True)
@@ -189,25 +237,62 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     keypart_root_create = keypart_root_sub.add_parser("create")
     keypart_root_create.add_argument("--out", required=True)
     keypart_root_create.add_argument("--password")
+    keypart_root_create.add_argument("--label")
     keypart_root_inspect = keypart_root_sub.add_parser("inspect")
     keypart_root_inspect.add_argument("--in", dest="input", required=True)
     keypart_root_rotate = keypart_root_sub.add_parser("rotate")
     keypart_root_rotate.add_argument("--in", dest="input", required=True)
     keypart_root_rotate.add_argument("--out", required=True)
     keypart_root_rotate.add_argument("--password")
+    keypart_root_retire = keypart_root_sub.add_parser("retire")
+    keypart_root_retire.add_argument("--in", dest="input", required=True)
+    keypart_root_retire.add_argument("--out", required=True)
+    keypart_root_retire.add_argument("--password")
+    keypart_root_revoke = keypart_root_sub.add_parser("revoke")
+    keypart_root_revoke.add_argument("--in", dest="input", required=True)
+    keypart_root_revoke.add_argument("--out", required=True)
+    keypart_root_revoke.add_argument("--password")
     keypart_root_export = keypart_root_sub.add_parser("export-qr")
     keypart_root_export.add_argument("--in", dest="input", required=True)
     keypart_root_export.add_argument("--out", required=True)
     keypart_root_export.add_argument("--password")
     keypart_root_import = keypart_root_sub.add_parser("import")
     keypart_root_import.add_argument("--in", dest="input", required=True)
-    keypart_root_import.add_argument("--out", required=True)
+    keypart_root_import.add_argument("--out")
     keypart_root_import.add_argument("--password")
+    keypart_root_import.add_argument("--label")
+    keypart_root_import.add_argument("--root-store")
+    keypart_root_list = keypart_root_sub.add_parser("list")
+    keypart_root_list.add_argument("--root-store")
+    keypart_root_show = keypart_root_sub.add_parser("show")
+    keypart_root_show.add_argument("--fingerprint", required=True)
+    keypart_root_show.add_argument("--root-store")
+    keypart_root_remove = keypart_root_sub.add_parser("remove")
+    keypart_root_remove.add_argument("--fingerprint", required=True)
+    keypart_root_remove.add_argument("--root-store")
+    keypart_root_remove.add_argument("--yes", action="store_true")
+    keypart_root_split = keypart_root_sub.add_parser("split")
+    keypart_root_split.add_argument("--in", dest="input", required=True)
+    keypart_root_split.add_argument("--password")
+    keypart_root_split.add_argument("--shares", type=int, required=True)
+    keypart_root_split.add_argument("--threshold", type=int, required=True)
+    keypart_root_split.add_argument("--out-dir", required=True)
+    keypart_root_recover = keypart_root_sub.add_parser("recover")
+    keypart_root_recover.add_argument("--shares", nargs="+", required=True)
+    keypart_root_recover.add_argument("--out", required=True)
+    keypart_root_recover.add_argument("--password")
 
     auth = sub.add_parser("auth", aliases=_alias(aliases, "auth"), help="manage one-time auth state")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_destroy = auth_sub.add_parser("destroy")
     auth_destroy.add_argument(*_opts(policy, "auth_state", "--auth-state", "-a"), dest="auth_state", required=True)
+    auth_seen = auth_sub.add_parser("seen")
+    auth_seen_sub = auth_seen.add_subparsers(dest="seen_command", required=True)
+    auth_seen_sub.add_parser("list")
+    auth_seen_forget = auth_seen_sub.add_parser("forget")
+    auth_seen_forget.add_argument("--msg-id", required=True)
+    auth_seen_forget.add_argument("--yes", action="store_true")
+    auth_seen_sub.add_parser("vacuum")
 
     contact = sub.add_parser("contact", help="manage recipient contacts")
     contact_sub = contact.add_subparsers(dest="contact_command", required=True)
@@ -256,9 +341,14 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     verify_only.add_argument("--keypart", "-k")
     verify_only.add_argument("--root-keypart")
     verify_only.add_argument("--root-keypart-password")
-    verify_only.add_argument("--auth-state", "-a", required=True)
+    verify_only.add_argument("--root-store")
+    verify_only.add_argument("--root-fingerprint")
+    verify_only.add_argument("--auth-state", "-a")
     verify_only.add_argument("--password", "-p")
     verify_only.add_argument("--identity-password")
+    verify_only.add_argument("--allow-revoked-root", action="store_true")
+    verify_only.add_argument("--no-replay-check", action="store_true")
+    verify_only.add_argument("--debug-reason", action="store_true")
 
     repair = sub.add_parser("repair", help="inspect and normalize recoverable local artifacts")
     repair_sub = repair.add_subparsers(dest="repair_command", required=True)
@@ -267,12 +357,39 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     repair_keypart_cmd.add_argument("--out")
     repair_scan = repair_sub.add_parser("scan")
     repair_scan.add_argument("--dir", default=".")
+    repair_scan.add_argument("--low-signature", action="store_true")
 
     migrate = sub.add_parser("migrate", help="migrate protocol metadata into a new artifact")
     migrate_sub = migrate.add_subparsers(dest="migrate_command", required=True)
     migrate_keypart_cmd = migrate_sub.add_parser("keypart")
     migrate_keypart_cmd.add_argument("--keypart", "-k", required=True)
     migrate_keypart_cmd.add_argument("--out", required=True)
+    migrate_message_cmd = migrate_sub.add_parser("message")
+    migrate_message_cmd.add_argument("--input", required=True)
+    migrate_message_cmd.add_argument("--out", required=True)
+    migrate_message_cmd.add_argument("--to-crypto-core", choices=["2.2"], required=True)
+    migrate_root_cmd = migrate_sub.add_parser("root")
+    migrate_root_cmd.add_argument("--in", dest="input", required=True)
+    migrate_root_cmd.add_argument("--out", required=True)
+    migrate_root_cmd.add_argument("--password")
+    migrate_root_cmd.add_argument("--to-root-file-version", choices=["2"], required=True)
+
+    carrier_cmd = sub.add_parser("carrier", help="audit, compare, and profile carrier files")
+    carrier_sub = carrier_cmd.add_subparsers(dest="carrier_command", required=True)
+    carrier_audit_cmd = carrier_sub.add_parser("audit")
+    carrier_audit_cmd.add_argument("--input", required=True)
+    carrier_audit_cmd.add_argument("--json", action="store_true")
+    carrier_compare_cmd = carrier_sub.add_parser("compare")
+    carrier_compare_cmd.add_argument("--before", required=True)
+    carrier_compare_cmd.add_argument("--after", required=True)
+    carrier_compare_cmd.add_argument("--json", action="store_true")
+    carrier_profile = carrier_sub.add_parser("profile")
+    carrier_profile_sub = carrier_profile.add_subparsers(dest="profile_command", required=True)
+    carrier_profile_create = carrier_profile_sub.add_parser("create")
+    carrier_profile_create.add_argument("--samples", required=True)
+    carrier_profile_create.add_argument("--out", required=True)
+    carrier_profile_inspect = carrier_profile_sub.add_parser("inspect")
+    carrier_profile_inspect.add_argument("--in", dest="input", required=True)
 
     safe = sub.add_parser("secure-delete", help="overwrite and delete a local file with explicit confirmation")
     safe.add_argument("--path", required=True)
@@ -282,6 +399,7 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
 
     package = sub.add_parser("package", help="build a cross-platform Python zipapp")
     package.add_argument("--out", required=True)
+    package.add_argument("--release", action="store_true", help="build release artifact set into --out directory")
 
     sub.add_parser("test-vector", help="run stable cryptographic regression vectors")
 
@@ -343,18 +461,21 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         password = _secret(args.password, "message password")
         recipients = [store.resolve_recipient(value) for value in args.recipient]
         root_seed = None
+        root_metadata = None
         keypart_path = args.keypart
-        if args.root_keypart:
+        if args.root_keypart or args.root_label or args.root_fingerprint or args.root_store:
             if args.keypart:
                 raise VeilError("v2 root-keypart mode does not write an external --keypart")
-            root_seed = open_root_vkp_seed(
-                args.root_keypart,
-                _secret(args.root_keypart_password, "root keypart password"),
-            )
+            root = _open_root_from_args(args, home)
+            root_seed = root.seed
+            root_metadata = root.metadata
+            if root.status != "active":
+                raise VeilError("root is not active for sealing")
         elif args.no_external_keypart:
             raise VeilError("--no-external-keypart requires --root-keypart")
         elif not keypart_path:
             raise VeilError("send requires --keypart for v1 messages or --root-keypart for v2 messages")
+        carrier_profile = _load_json_file(args.carrier_profile) if args.carrier_profile else None
         return create_message(
             input_path=args.input,
             output_path=args.output,
@@ -369,35 +490,55 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
             decoy_password=args.decoy_password,
             device_bound=args.device_bind,
             root_vkp_seed=root_seed,
+            root_metadata=root_metadata,
+            crypto_core_version=args.crypto_core,
+            low_signature=args.low_signature,
+            signature_profile=args.signature_profile,
+            carrier_profile=carrier_profile,
         )
     if command == "seal":
         password = _secret(args.password, "message password")
         recipients = [store.resolve_recipient(value) for value in args.recipient]
         output = Path(args.output)
         root_seed = None
+        root_metadata = None
         keypart_path = args.keypart or output.with_suffix(".vkp")
-        if args.root_keypart:
+        if args.root_keypart or args.root_label or args.root_fingerprint or args.root_store:
             if args.keypart:
                 raise VeilError("v2 root-keypart mode does not write an external --keypart")
-            root_seed = open_root_vkp_seed(
-                args.root_keypart,
-                _secret(args.root_keypart_password, "root keypart password"),
-            )
+            root = _open_root_from_args(args, home)
+            root_seed = root.seed
+            root_metadata = root.metadata
+            if root.status != "active":
+                raise VeilError("root is not active for sealing")
             keypart_path = None
         elif args.no_external_keypart:
             raise VeilError("--no-external-keypart requires --root-keypart")
+        auth_state = args.auth_state or output.with_suffix(".vauth")
+        if args.crypto_core == "2.2" and args.low_signature:
+            state_dir = home / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            auth_state = state_dir / f"auth-{random.getrandbits(64):016x}.json"
+        carrier_profile = _load_json_file(args.carrier_profile) if args.carrier_profile else None
         return create_message(
             input_path=args.input,
             output_path=output,
             keypart_path=keypart_path,
-            auth_state_path=args.auth_state or output.with_suffix(".vauth"),
+            auth_state_path=auth_state,
             recipients=recipients,
             password=password,
             policy=policy,
             carrier_path=args.carrier,
             container_format=args.format,
+            decoy_input=args.decoy_input,
+            decoy_password=args.decoy_password,
             device_bound=args.device_bind,
             root_vkp_seed=root_seed,
+            root_metadata=root_metadata,
+            crypto_core_version=args.crypto_core,
+            low_signature=args.low_signature,
+            signature_profile=args.signature_profile,
+            carrier_profile=carrier_profile,
         )
     if command == "receive":
         password = _secret(args.password, "message password")
@@ -419,21 +560,24 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         detected_version = message_protocol_version(args.input)
         if args.root_keypart and args.keypart:
             raise VeilError("choose either --root-keypart or --keypart, not both")
-        if args.root_keypart:
+        if args.root_keypart or args.root_fingerprint or args.root_store:
             if detected_version == 1:
                 raise VeilError("This is a v1 external-keypart message. Use --keypart instead.")
-            root_seed = open_root_vkp_seed(
-                args.root_keypart,
-                _secret(args.root_keypart_password, "root keypart password"),
-            )
+            root = _open_root_from_args(args, home)
+            if root.status == "revoked" and not args.allow_revoked_root:
+                raise VeilDecryptError("Unable to open message.")
             return receive_message_v2(
                 input_path=args.input,
-                root_vkp_seed=root_seed,
+                root_vkp_seed=root.seed,
+                root_metadata=root.metadata,
                 auth_state_path=args.auth_state or Path(args.input).with_suffix(".vauth"),
                 output_dir=args.output,
                 identity=private,
                 password=password,
                 verify_only=args.verify_only,
+                seen_db_path=seen_db_path(home),
+                no_replay_check=args.no_replay_check,
+                allow_revoked_root=args.allow_revoked_root,
             )
         if detected_version == 2 and args.keypart:
             raise VeilError("This is a v2 root-keypart message. Use --root-keypart instead.")
@@ -452,11 +596,19 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         if args.keypart_command == "inspect":
             return inspect_keypart(args.keypart)
         if args.keypart_command == "root":
-            return _root_keypart(args, policy)
+            return _root_keypart(args, policy, home)
     if command == "auth":
         if args.auth_command == "destroy":
             destroy_auth_state(args.auth_state)
             return {"destroyed": args.auth_state}
+        if args.auth_command == "seen":
+            db = seen_db_path(home)
+            if args.seen_command == "list":
+                return list_seen(db)
+            if args.seen_command == "forget":
+                return forget_seen(db, args.msg_id, confirm=args.yes)
+            if args.seen_command == "vacuum":
+                return vacuum_seen(db)
     if command == "contact":
         return _contact(args, store)
     if command == "profile":
@@ -474,21 +626,24 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         identity_password = _secret(args.identity_password, "identity password")
         private = store.load_private(identity_password)
         detected_version = message_protocol_version(args.input)
-        if args.root_keypart:
+        if args.root_keypart or args.root_fingerprint or args.root_store:
             if detected_version == 1:
                 raise VeilError("This is a v1 external-keypart message. Use --keypart instead.")
-            root_seed = open_root_vkp_seed(
-                args.root_keypart,
-                _secret(args.root_keypart_password, "root keypart password"),
-            )
+            root = _open_root_from_args(args, home)
+            if root.status == "revoked" and not args.allow_revoked_root:
+                raise VeilDecryptError("Unable to open message.")
             return receive_message_v2(
                 input_path=args.input,
-                root_vkp_seed=root_seed,
-                auth_state_path=args.auth_state,
+                root_vkp_seed=root.seed,
+                root_metadata=root.metadata,
+                auth_state_path=args.auth_state or Path(args.input).with_suffix(".vauth"),
                 output_dir=home / ".verify-only-unused",
                 identity=private,
                 password=password,
                 verify_only=True,
+                seen_db_path=seen_db_path(home),
+                no_replay_check=args.no_replay_check,
+                allow_revoked_root=args.allow_revoked_root,
             )
         if detected_version == 2 and args.keypart:
             raise VeilError("This is a v2 root-keypart message. Use --root-keypart instead.")
@@ -507,11 +662,15 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         return _repair(args)
     if command == "migrate":
         return _migrate(args)
+    if command == "carrier":
+        return _carrier(args)
     if command == "secure-delete":
         if args.yes and args.confirm_text != "DELETE":
             raise VeilError("secure-delete requires --confirm-text DELETE when --yes is used")
         return secure_delete(args.path, confirm=args.yes, dry_run=args.dry_run)
     if command == "package":
+        if args.release:
+            return build_release_artifacts(args.out)
         return build_zipapp(args.out)
     if command == "test-vector":
         return run_vectors()
@@ -555,21 +714,41 @@ def _contact(args: argparse.Namespace, store: IdentityStore) -> dict:
     raise VeilError(f"unknown contact command: {args.contact_command}")
 
 
-def _root_keypart(args: argparse.Namespace, policy: dict) -> dict:
+def _root_keypart(args: argparse.Namespace, policy: dict, home: Path) -> dict:
     if args.root_command == "create":
         password = _secret(args.password, "root keypart password")
-        return seal_root_vkp_seed(create_root_vkp_seed(), password, args.out, policy.get("kdf"))
+        return seal_root_vkp_seed(create_root_vkp_seed(), password, args.out, policy.get("kdf"), label=args.label)
     if args.root_command == "inspect":
         return inspect_root_vkp_seed(args.input)
     if args.root_command == "rotate":
         password = _secret(args.password, "root keypart password")
         return rotate_root_vkp_seed(args.input, args.out, password, policy.get("kdf"))
+    if args.root_command == "retire":
+        password = _secret(args.password, "root keypart password")
+        return set_root_vkp_seed_status(args.input, args.out, password, "retired", policy.get("kdf"))
+    if args.root_command == "revoke":
+        password = _secret(args.password, "root keypart password")
+        return set_root_vkp_seed_status(args.input, args.out, password, "revoked", policy.get("kdf"))
     if args.root_command == "export-qr":
         password = _secret(args.password, "root keypart password")
         return export_root_vkp_seed(args.input, password, args.out)
     if args.root_command == "import":
         password = _secret(args.password, "root keypart password")
-        return import_root_vkp_seed(args.input, args.out, password, policy.get("kdf"))
+        if args.out:
+            return import_root_vkp_seed(args.input, args.out, password, policy.get("kdf"), label=args.label)
+        return import_root_to_store(args.input, password, home=home, root_store=args.root_store, label=args.label, kdf=policy.get("kdf"))
+    if args.root_command == "list":
+        return list_root_store(home=home, root_store=args.root_store)
+    if args.root_command == "show":
+        return show_root_in_store(args.fingerprint, home=home, root_store=args.root_store)
+    if args.root_command == "remove":
+        return remove_root_from_store(args.fingerprint, home=home, root_store=args.root_store, confirm=args.yes)
+    if args.root_command == "split":
+        password = _secret(args.password, "root keypart password")
+        return split_root_vkp_seed(args.input, password, shares=args.shares, threshold=args.threshold, out_dir=args.out_dir)
+    if args.root_command == "recover":
+        password = _secret(args.password, "root keypart password")
+        return recover_root_vkp_seed(args.shares, args.out, password, policy.get("kdf"))
     raise VeilError(f"unknown keypart root command: {args.root_command}")
 
 
@@ -612,7 +791,35 @@ def _repair(args: argparse.Namespace) -> dict:
 def _migrate(args: argparse.Namespace) -> dict:
     if args.migrate_command == "keypart":
         return migrate_keypart(args.keypart, args.out)
+    if args.migrate_command == "message":
+        src = Path(args.input)
+        dest = Path(args.out)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+        return {
+            "input": str(src),
+            "output": str(dest),
+            "to_crypto_core": args.to_crypto_core,
+            "note": "message bytes copied; cryptographic re-sealing to 2.2 requires the original open credentials",
+        }
+    if args.migrate_command == "root":
+        password = _secret(args.password, "root keypart password")
+        root = open_root_vkp_seed_info(args.input, password)
+        return seal_root_vkp_seed(root.seed, password, args.out, metadata=root.metadata)
     raise VeilError(f"unknown migrate command: {args.migrate_command}")
+
+
+def _carrier(args: argparse.Namespace) -> dict:
+    if args.carrier_command == "audit":
+        return carrier_audit(args.input, as_json=args.json)
+    if args.carrier_command == "compare":
+        return carrier_compare(args.before, args.after, as_json=args.json)
+    if args.carrier_command == "profile":
+        if args.profile_command == "create":
+            return create_carrier_profile(args.samples, args.out)
+        if args.profile_command == "inspect":
+            return inspect_carrier_profile(args.input)
+    raise VeilError(f"unknown carrier command: {args.carrier_command}")
 
 
 def _factory(args: argparse.Namespace) -> dict:
@@ -663,3 +870,23 @@ def _secret(value: str | None, label: str) -> str:
     if value is not None:
         return value
     return getpass.getpass(f"{label}: ")
+
+
+def _open_root_from_args(args: argparse.Namespace, home: Path):
+    password = _secret(getattr(args, "root_keypart_password", None), "root keypart password")
+    root_path = getattr(args, "root_keypart", None)
+    if root_path:
+        return open_root_vkp_seed_info(root_path, password)
+    return resolve_root_from_store(
+        password=password,
+        home=home,
+        root_store=getattr(args, "root_store", None),
+        fingerprint_value=getattr(args, "root_fingerprint", None),
+        label=getattr(args, "root_label", None),
+    )
+
+
+def _load_json_file(path: str | None) -> dict | None:
+    if not path:
+        return None
+    return json.loads(Path(path).read_text(encoding="utf-8"))

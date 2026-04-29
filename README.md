@@ -4,14 +4,14 @@
 
 Technical details live in [docs/TECHNICAL.md](docs/TECHNICAL.md). Platform client status lives in [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
-VeilNode Suite is an offline multi-platform toolset for encrypted files disguised as ordinary data.
+VeilNode Suite is an offline multi-platform toolset for encrypted file transfer through ordinary carrier files. It is designed for local privacy work, including high-review-pressure environments where minimizing exposed metadata and fixed engineering signatures matters.
 It contains:
 
 - `veil-factory`: generates node wrappers and node policy files.
 - `veil-node`: creates/imports identities, manages contacts, seals files into carriers and opens messages.
 - `veil-msg`: a normal-looking carrier file plus either a v1 per-message `.vkp` keypart or v2 root-derived keypart metadata, with one-time auth state.
 
-This implementation is intentionally offline. It does not call a server and does not require a network path for identity exchange.
+This implementation is intentionally offline. It does not call a server and does not require a network path for identity exchange. It does not claim absolute non-identifiability or immunity to investigation; carrier size, timestamps, storage location and transfer behavior can still create risk.
 
 ## Install / Run
 
@@ -143,6 +143,134 @@ veil-node keypart root export-qr --in root.vkpseed --out root.txt --password roo
 veil-node keypart root import --in root.txt --out imported.vkpseed --password rootpass
 ```
 
+## Veil Offline Envelope Crypto Core v2.2
+
+`crypto_core_version = "2.2"` is the offline envelope crypto core version. It is not the VeilNode Suite package version, and this repository does not change the Python package version to 2.2.
+
+New v2.2 messages use:
+
+```json
+{
+  "protocol_family": "veil-offline-envelope",
+  "crypto_core_version": "2.2"
+}
+```
+
+Protocol summary:
+
+- v1: external per-message `.vkp` plus `.vauth`.
+- v2: root `.vkpseed` derives per-message `vkp_i`; no per-message `.vkp`.
+- v2.2: root lifecycle metadata, encrypted/minimized message metadata, local replay seen database, Shamir root backup, optional decoy payloads, low-signature carrier embedding controls and carrier audit/compare/profile tools.
+
+v2.2 quick start:
+
+```bash
+mkdir -p .demo
+
+veil-node --home .demo/alice identity create \
+  --name alice \
+  --password idpass \
+  --overwrite
+
+veil-node --home .demo/alice identity export \
+  --out .demo/alice.vid
+
+veil-node --home .demo/alice contact import \
+  .demo/alice.vid \
+  --alias alice
+
+veil-node keypart root create \
+  --out .demo/alice_bob.root.vkpseed \
+  --password rootpass \
+  --label alice-bob
+
+veil-node keypart root inspect \
+  --in .demo/alice_bob.root.vkpseed
+
+echo "secret" > .demo/secret.txt
+
+python3 - <<'PY'
+import zipfile
+with zipfile.ZipFile(".demo/cover.zip", "w") as zf:
+    zf.writestr("readme.txt", "ordinary cover file\n")
+PY
+
+veil-node --home .demo/alice seal \
+  .demo/secret.txt \
+  .demo/cover.zip \
+  .demo/message.zip \
+  --to alice \
+  --password msgpass \
+  --root-keypart .demo/alice_bob.root.vkpseed \
+  --root-keypart-password rootpass \
+  --crypto-core 2.2 \
+  --low-signature \
+  --signature-profile balanced
+
+veil-node --home .demo/alice open \
+  .demo/message.zip \
+  --root-keypart .demo/alice_bob.root.vkpseed \
+  --root-keypart-password rootpass \
+  --out .demo/out \
+  --password msgpass \
+  --identity-password idpass
+
+veil-node carrier audit \
+  --input .demo/message.zip \
+  --json
+
+veil-node carrier compare \
+  --before .demo/cover.zip \
+  --after .demo/message.zip \
+  --json
+```
+
+Root lifecycle:
+
+```bash
+veil-node keypart root rotate --in .demo/alice_bob.root.vkpseed --out .demo/alice_bob.epoch1.root.vkpseed --password rootpass
+veil-node keypart root retire --in root.vkpseed --out retired.root.vkpseed --password rootpass
+veil-node keypart root revoke --in root.vkpseed --out revoked.root.vkpseed --password rootpass
+veil-node keypart root import --in root.vkpseed --password rootpass --label alice-bob
+veil-node keypart root list
+veil-node keypart root show --fingerprint <fingerprint>
+```
+
+Shamir backup:
+
+```bash
+veil-node keypart root split \
+  --in .demo/alice_bob.root.vkpseed \
+  --password rootpass \
+  --shares 5 \
+  --threshold 3 \
+  --out-dir .demo/shares
+
+veil-node keypart root recover \
+  --shares .demo/shares/root.share.1 .demo/shares/root.share.2 .demo/shares/root.share.3 \
+  --out .demo/recovered.root.vkpseed \
+  --password rootpass
+```
+
+Replay and decoy:
+
+- v2.2 successful opens are recorded in `<home>/state/msg_seen.db`. Reopening the same `msg_id` fails with `Unable to open message.`.
+- `--no-replay-check` is only for tests and local debugging; do not use it for production recovery.
+- `--decoy-input fake.txt --decoy-password fakepass` adds an independently authenticated decoy payload. This is coercion-resistance assistance, not mathematically perfect deniable encryption.
+
+Low-signature privacy mode:
+
+- Enable explicitly with `--low-signature`.
+- Profiles: `conservative`, `balanced`, `aggressive`.
+- The goal is reduced fixed signatures, metadata minimization, local privacy hygiene and better carrier format fidelity.
+- It does not guarantee that a file cannot be identified as unusual.
+
+Operational rules:
+
+- Do not place `.vkpseed`, passwords, identity private storage and carriers in the same location or channel.
+- If a root leaks: revoke it, rotate to a new root, stop using the old root for new messages and redistribute the new root through a separate channel.
+- Carrier audit is a local engineering risk score only. File size, modification time, storage paths and transfer behavior can still reveal risk.
+
 ## Usage Guide
 
 Identity and contacts:
@@ -191,7 +319,7 @@ veil-node test-vector
 veil-node secure-delete --path message.vkp --dry-run
 ```
 
-Desktop and mobile client packages are provided for macOS, Windows, Linux, iOS/iPadOS and Android. macOS, Windows and Linux expose the shared seal/open flows through desktop GUI clients; iOS/iPadOS and Android ship native mobile client sources aligned around `.vpkg`, `.vid`, `.vkpseed` and shared-core workflows.
+Desktop and mobile client packages are provided for macOS, Windows, iOS/iPadOS and Android. Linux and NAS GUI clients are no longer release targets; use the CLI on those systems. macOS and Windows expose shared seal/open/root/carrier flows through GUI clients; iOS/iPadOS and Android source packages are aligned around `.vpkg`, `.vid`, `.vkpseed`, crypto core v2.2 and shared-core workflows.
 
 Export a fixed-client node package:
 

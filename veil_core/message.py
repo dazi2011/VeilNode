@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import time
+import hmac
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -35,6 +36,7 @@ from .errors import VeilDecryptError, VeilError
 from .identity import PrivateIdentity, PublicIdentity
 from .padding import padding_len
 from .protocol import assert_supported, current_protocol, protocol_v2
+from .replay import assert_not_seen, mark_seen
 
 
 DEFAULT_POLICY = {
@@ -54,6 +56,8 @@ DEFAULT_POLICY = {
 }
 
 V2_PACKAGE_KIND = "veil-msg-v2"
+PROTOCOL_FAMILY = "veil-offline-envelope"
+CRYPTO_CORE_VERSION_22 = "2.2"
 
 
 @dataclass
@@ -120,6 +124,11 @@ def create_message(
     decoy_password: str | None = None,
     device_bound: bool = False,
     root_vkp_seed: bytes | None = None,
+    root_metadata: dict | None = None,
+    crypto_core_version: str | None = None,
+    low_signature: bool = False,
+    signature_profile: str = "balanced",
+    carrier_profile: dict | None = None,
 ) -> dict:
     cfg = load_policy(None)
     if policy:
@@ -132,6 +141,26 @@ def create_message(
     if not recipient_list:
         raise VeilError("at least one recipient is required")
     if root_vkp_seed is not None:
+        requested_core = str(crypto_core_version or "2")
+        if requested_core == CRYPTO_CORE_VERSION_22:
+            return _create_message_v22(
+                input_path=input_path,
+                output_path=output_path,
+                auth_state_path=auth_state_path,
+                recipients=recipient_list,
+                password=password,
+                policy=cfg,
+                carrier_path=carrier_path,
+                container_format=fmt,
+                root_vkp_seed=root_vkp_seed,
+                root_metadata=root_metadata or {},
+                device_bound=device_bound,
+                decoy_input=decoy_input,
+                decoy_password=decoy_password,
+                low_signature=low_signature,
+                signature_profile=signature_profile,
+                carrier_profile=carrier_profile,
+            )
         return _create_message_v2(
             input_path=input_path,
             output_path=output_path,
@@ -142,6 +171,7 @@ def create_message(
             carrier_path=carrier_path,
             container_format=fmt,
             root_vkp_seed=root_vkp_seed,
+            root_metadata=root_metadata or {},
             device_bound=device_bound,
             decoy_input=decoy_input,
             decoy_password=decoy_password,
@@ -272,7 +302,10 @@ def inspect_keypart(path: str | Path) -> dict:
 
 
 def message_protocol_version(path: str | Path) -> int:
-    return 2 if _extract_v2_package(path, required=False) is not None else 1
+    try:
+        return 2 if _extract_v22_package(path, required=False) is not None or _extract_v2_package(path, required=False) is not None else 1
+    except FileNotFoundError as exc:
+        raise VeilDecryptError("Unable to open message.") from exc
 
 
 def receive_message_v2(
@@ -284,8 +317,27 @@ def receive_message_v2(
     identity: PrivateIdentity,
     password: str,
     verify_only: bool = False,
+    root_metadata: dict | None = None,
+    seen_db_path: str | Path | None = None,
+    no_replay_check: bool = False,
+    allow_revoked_root: bool = False,
 ) -> dict:
     try:
+        package22 = _extract_v22_package(input_path, required=False)
+        if package22 is not None:
+            return _receive_message_v22(
+                input_path=input_path,
+                package=package22,
+                root_vkp_seed=root_vkp_seed,
+                root_metadata=root_metadata or {},
+                seen_db_path=seen_db_path,
+                output_dir=output_dir,
+                identity=identity,
+                password=password,
+                verify_only=verify_only,
+                no_replay_check=no_replay_check,
+                allow_revoked_root=allow_revoked_root,
+            )
         package = _extract_v2_package(input_path, required=True)
         assert_supported(package.get("protocol"))
         if int(package.get("protocol", {}).get("version", 0)) != 2:
@@ -361,6 +413,7 @@ def _create_message_v2(
     carrier_path: str | Path | None,
     container_format: str,
     root_vkp_seed: bytes,
+    root_metadata: dict | None,
     device_bound: bool,
     decoy_input: str | Path | None,
     decoy_password: str | None,
@@ -405,6 +458,228 @@ def _create_message_v2(
     }
 
 
+def _create_message_v22(
+    *,
+    input_path: str | Path,
+    output_path: str | Path,
+    auth_state_path: str | Path,
+    recipients: list[PublicIdentity],
+    password: str,
+    policy: dict,
+    carrier_path: str | Path | None,
+    container_format: str,
+    root_vkp_seed: bytes,
+    root_metadata: dict,
+    device_bound: bool,
+    decoy_input: str | Path | None,
+    decoy_password: str | None,
+    low_signature: bool,
+    signature_profile: str,
+    carrier_profile: dict | None,
+) -> dict:
+    if len(recipients) != 1:
+        raise VeilError("crypto core v2.2 root-keypart mode currently supports exactly one recipient")
+    if device_bound:
+        raise VeilError("crypto core v2.2 root-keypart mode does not support device-bound password derivation")
+    status = str(root_metadata.get("status") or "active")
+    if status != "active":
+        raise VeilError("root is not active for sealing")
+    fmt = normalize_format(container_format, carrier_path or output_path)
+    common_msg_id = secrets.token_bytes(16)
+    builds = [
+        _build_layer_v2(
+            role="real",
+            input_path=input_path,
+            password=password,
+            recipient=recipients[0],
+            policy=policy,
+            root_vkp_seed=root_vkp_seed,
+            msg_id=common_msg_id,
+            core_version=CRYPTO_CORE_VERSION_22,
+        )
+    ]
+    if decoy_input:
+        if not decoy_password:
+            raise VeilError("decoy password is required when decoy input is used")
+        builds.append(
+            _build_layer_v2(
+                role="decoy",
+                input_path=decoy_input,
+                password=decoy_password,
+                recipient=recipients[0],
+                policy=policy,
+                root_vkp_seed=root_vkp_seed,
+                msg_id=common_msg_id,
+                core_version=CRYPTO_CORE_VERSION_22,
+            )
+        )
+    package = _v22_package(
+        builds,
+        fmt,
+        root_vkp_seed=root_vkp_seed,
+        root_metadata=root_metadata,
+        low_signature=low_signature,
+        signature_profile=signature_profile,
+    )
+    carrier = carrier_bytes(fmt, carrier_path)
+    embedded = embed_payload(carrier, _json_for_embedding(package, low_signature=low_signature), fmt)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(embedded.data)
+    validation = verify_container(output, fmt)
+    if not validation["ok"]:
+        raise VeilError(f"container verification failed for {fmt}")
+    if auth_state_path and not low_signature:
+        _write_auth_state(auth_state_path, [build.auth_record for build in builds])
+    return {
+        "output": str(output),
+        "keypart": None,
+        "auth_state": None if low_signature else str(auth_state_path),
+        "format": fmt,
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "root_keypart": True,
+        "external_keypart": False,
+        "msg_id": b64e(common_msg_id),
+        "receiver_id": builds[0].receiver_id,
+        "root_epoch": int(root_metadata.get("root_epoch", 0)),
+        "root_fingerprint": root_metadata.get("fingerprint"),
+        "low_signature": low_signature,
+        "signature_profile": signature_profile,
+        "carrier_profile_used": bool(carrier_profile),
+        "container_mode": embedded.mode,
+        "container_validation": validation,
+    }
+
+
+def _receive_message_v22(
+    *,
+    input_path: str | Path,
+    package: dict,
+    root_vkp_seed: bytes,
+    root_metadata: dict,
+    seen_db_path: str | Path | None,
+    output_dir: str | Path,
+    identity: PrivateIdentity,
+    password: str,
+    verify_only: bool,
+    no_replay_check: bool,
+    allow_revoked_root: bool,
+) -> dict:
+    if str(root_metadata.get("status") or "active") == "revoked" and not allow_revoked_root:
+        raise VeilDecryptError("Unable to open message.")
+    entries = _v22_entries(package)
+    last_error: Exception | None = None
+    for entry in entries:
+        try:
+            inner = _decrypt_v22_metadata(entry, root_vkp_seed)
+            if inner.get("protocol_family") != PROTOCOL_FAMILY or str(inner.get("crypto_core_version")) != CRYPTO_CORE_VERSION_22:
+                raise ValueError("core mismatch")
+            if inner.get("receiver_id") != identity.public.node_id:
+                raise ValueError("receiver mismatch")
+            expected_fp = root_metadata.get("fingerprint") or inner.get("root_fingerprint")
+            if inner.get("root_fingerprint") != expected_fp:
+                raise ValueError("root fingerprint mismatch")
+            if int(inner.get("root_epoch", -1)) != int(root_metadata.get("root_epoch", inner.get("root_epoch", -2))):
+                raise ValueError("root epoch mismatch")
+            msg_id = b64d(inner["msg_id"])
+            root_hint = _hint(str(inner["root_fingerprint"]), msg_id)
+            receiver_hint = _hint(str(inner["receiver_id"]), msg_id)
+            if not hmac.compare_digest(root_hint, str(entry.get("root_hint") or "")):
+                raise ValueError("root hint mismatch")
+            if not hmac.compare_digest(receiver_hint, str(entry.get("receiver_hint") or "")):
+                raise ValueError("receiver hint mismatch")
+            result = _open_v22_inner(
+                input_path=input_path,
+                inner=inner,
+                root_vkp_seed=root_vkp_seed,
+                output_dir=output_dir,
+                identity=identity,
+                password=password,
+                verify_only=verify_only,
+                seen_db_path=seen_db_path,
+                no_replay_check=no_replay_check,
+            )
+            return result
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise VeilDecryptError("Unable to open message.") from last_error
+
+
+def _open_v22_inner(
+    *,
+    input_path: str | Path,
+    inner: dict,
+    root_vkp_seed: bytes,
+    output_dir: str | Path,
+    identity: PrivateIdentity,
+    password: str,
+    verify_only: bool,
+    seen_db_path: str | Path | None,
+    no_replay_check: bool,
+) -> dict:
+    msg_id = b64d(inner["msg_id"])
+    message_salt = b64d(inner["message_salt"])
+    file_hash = b64d(inner["file_hash"])
+    receiver_id = inner["receiver_id"].encode("utf-8")
+    vkp_i = derive_vkp_i(root_vkp_seed, msg_id, file_hash, receiver_id)
+    message_key = derive_message_key_v2(vkp_i, password, message_salt, inner.get("kdf"))
+    layer_id = inner["layer_id"]
+    layer_salt = b64d(inner["layer_salt"])
+    file_key = _unwrap_file_key(inner.get("envelopes", []), identity, layer_id)
+    blob = b64d(inner["blob"])
+    if b64e(sha256(blob)) != inner.get("payload_sha256"):
+        raise ValueError("payload hash mismatch")
+    manifest_len = int(inner["manifest_len"])
+    manifest_ciphertext = blob[:manifest_len]
+    chunk_payload = blob[manifest_len:]
+    aad = canonical_json({"layer_id": layer_id, "role": inner.get("role", "real"), "v": 2, "core": CRYPTO_CORE_VERSION_22})
+    manifest_key = subkey(message_key, file_key, "manifest-aes-256-gcm-v2", layer_salt)
+    manifest_plain = aes_decrypt(manifest_key, b64d(inner["manifest_nonce"]), manifest_ciphertext, aad=aad)
+    manifest = json.loads(manifest_plain.decode("utf-8"))
+    assert_supported(manifest.get("protocol"))
+    if int(manifest.get("protocol", {}).get("version", 0)) != 2 or manifest.get("layer_id") != layer_id:
+        raise ValueError("manifest mismatch")
+    outer_ciphertext = _reassemble_chunks(chunk_payload, manifest)
+    outer_key = subkey(message_key, file_key, "aes-256-gcm-outer-v2", layer_salt)
+    inner_ciphertext = aes_decrypt(outer_key, b64d(manifest["outer_nonce"]), outer_ciphertext, aad=aad)
+    content_key = subkey(message_key, file_key, "xchacha20-poly1305-content-v2", layer_salt)
+    archive = xchacha_decrypt(content_key, b64d(manifest["inner_nonce"]), inner_ciphertext, aad=aad)
+    if b64e(sha256(archive)) != manifest["archive_sha256"] or b64e(file_hash) != manifest["file_hash"]:
+        raise ValueError("archive hash mismatch")
+    if verify_only:
+        return {
+            "verified": True,
+            "protocol_family": PROTOCOL_FAMILY,
+            "crypto_core_version": CRYPTO_CORE_VERSION_22,
+            "role": manifest.get("role"),
+            "archive_meta": manifest.get("archive_meta", {}),
+            "replay_checked": not no_replay_check,
+        }
+    db_path = Path(seen_db_path) if seen_db_path else None
+    if db_path and not no_replay_check:
+        assert_not_seen(db_path, inner["msg_id"])
+    written = _transactional_unpack(archive, output_dir)
+    if db_path and not no_replay_check:
+        mark_seen(
+            db_path,
+            msg_id=inner["msg_id"],
+            receiver_id=inner["receiver_id"],
+            root_fingerprint=inner["root_fingerprint"],
+            root_epoch=int(inner["root_epoch"]),
+            file_hash=inner["file_hash"],
+            message_fingerprint=b64e(sha256(Path(input_path).read_bytes())),
+        )
+    return {
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "role": manifest.get("role"),
+        "archive_meta": manifest.get("archive_meta", {}),
+        "written": [str(p) for p in written],
+    }
+
+
 def _build_layer_v2(
     *,
     role: str,
@@ -413,10 +688,12 @@ def _build_layer_v2(
     recipient: PublicIdentity,
     policy: dict,
     root_vkp_seed: bytes,
+    msg_id: bytes | None = None,
+    core_version: str | None = None,
 ) -> V2LayerBuild:
     archive, archive_meta = pack_input(input_path)
     file_hash = sha256(archive)
-    msg_id = secrets.token_bytes(16)
+    msg_id = msg_id or secrets.token_bytes(16)
     message_salt = secrets.token_bytes(16)
     receiver_id = recipient.node_id
     vkp_i = derive_vkp_i(root_vkp_seed, msg_id, file_hash, receiver_id.encode("utf-8"))
@@ -425,7 +702,10 @@ def _build_layer_v2(
     file_key = secrets.token_bytes(32)
     layer_id = random_b64(18)
     layer_salt = secrets.token_bytes(16)
-    aad = canonical_json({"layer_id": layer_id, "role": role, "v": 2})
+    aad_fields = {"layer_id": layer_id, "role": role, "v": 2}
+    if core_version:
+        aad_fields["core"] = core_version
+    aad = canonical_json(aad_fields)
 
     content_key = subkey(message_key, file_key, "xchacha20-poly1305-content-v2", layer_salt)
     inner_nonce, inner_ciphertext = xchacha_encrypt(content_key, archive, aad=aad)
@@ -508,7 +788,167 @@ def _v2_package(build: V2LayerBuild, fmt: str) -> dict:
     }
 
 
+def _v22_package(
+    builds: list[V2LayerBuild],
+    fmt: str,
+    *,
+    root_vkp_seed: bytes,
+    root_metadata: dict,
+    low_signature: bool,
+    signature_profile: str,
+) -> dict:
+    entries = [
+        _v22_outer_entry(
+            build,
+            fmt,
+            root_vkp_seed=root_vkp_seed,
+            root_metadata=root_metadata,
+            low_signature=low_signature,
+            signature_profile=signature_profile,
+        )
+        for build in builds
+    ]
+    package = {
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "metadata_schema_id": entries[0]["metadata_schema_id"],
+        "encrypted_metadata_len": entries[0]["encrypted_metadata_len"],
+        "encrypted_metadata_nonce": entries[0]["encrypted_metadata_nonce"],
+        "encrypted_metadata_tag": entries[0]["encrypted_metadata_tag"],
+        "encrypted_metadata": entries[0]["encrypted_metadata"],
+        "root_hint": entries[0]["root_hint"],
+        "receiver_hint": entries[0]["receiver_hint"],
+    }
+    if len(entries) > 1:
+        package["entries"] = entries
+    return _shuffle_dict(package) if low_signature else package
+
+
+def _v22_outer_entry(
+    build: V2LayerBuild,
+    fmt: str,
+    *,
+    root_vkp_seed: bytes,
+    root_metadata: dict,
+    low_signature: bool,
+    signature_profile: str,
+) -> dict:
+    root_fp = str(root_metadata.get("fingerprint") or "")
+    root_epoch = int(root_metadata.get("root_epoch", 0))
+    root_id = str(root_metadata.get("root_id") or root_fp)
+    flags = {
+        "decoy": build.role == "decoy",
+        "decoy_pad": "match",
+        "replay_protected": True,
+        "low_signature": low_signature,
+    }
+    inner = {
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "msg_id": b64e(build.msg_id),
+        "message_salt": b64e(build.message_salt),
+        "file_hash": b64e(build.file_hash),
+        "receiver_id": build.receiver_id,
+        "root_id": root_id,
+        "root_fingerprint": root_fp,
+        "root_epoch": root_epoch,
+        "created_at": int(time.time()),
+        "kdf_id": "argon2id",
+        "kdf": build.pass_params,
+        "flags": flags,
+        "role": build.role,
+        "layer_id": build.layer_id,
+        "layer_salt": b64e(build.layer_salt),
+        "manifest_nonce": b64e(build.manifest_nonce),
+        "manifest_len": build.manifest_len,
+        "payload_sha256": b64e(sha256(build.blob)),
+        "blob": b64e(build.blob),
+        "envelopes": build.envelopes,
+        "container_format": fmt,
+        "signature_profile": signature_profile,
+    }
+    schema_id = random_b64(9)
+    aad_fields = {
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "metadata_schema_id": schema_id,
+        "root_hint": _hint(root_fp, build.msg_id),
+        "receiver_hint": _hint(build.receiver_id, build.msg_id),
+    }
+    metadata_key = _v22_metadata_key(root_vkp_seed, schema_id)
+    nonce, ciphertext = aes_encrypt(
+        metadata_key,
+        canonical_json(_shuffle_dict(inner) if low_signature else inner),
+        aad=canonical_json(aad_fields),
+    )
+    return _shuffle_dict(
+        {
+            **aad_fields,
+            "encrypted_metadata_len": len(ciphertext),
+            "encrypted_metadata_nonce": b64e(nonce),
+            "encrypted_metadata_tag": b64e(ciphertext[-16:]),
+            "encrypted_metadata": b64e(ciphertext[:-16]),
+        }
+    ) if low_signature else {
+        **aad_fields,
+        "encrypted_metadata_len": len(ciphertext),
+        "encrypted_metadata_nonce": b64e(nonce),
+        "encrypted_metadata_tag": b64e(ciphertext[-16:]),
+        "encrypted_metadata": b64e(ciphertext[:-16]),
+    }
+
+
+def _decrypt_v22_metadata(entry: dict, root_vkp_seed: bytes) -> dict:
+    aad_fields = {
+        "protocol_family": entry.get("protocol_family"),
+        "crypto_core_version": entry.get("crypto_core_version"),
+        "metadata_schema_id": entry.get("metadata_schema_id"),
+        "root_hint": entry.get("root_hint"),
+        "receiver_hint": entry.get("receiver_hint"),
+    }
+    metadata_key = _v22_metadata_key(root_vkp_seed, str(entry["metadata_schema_id"]))
+    ciphertext = b64d(entry["encrypted_metadata"]) + b64d(entry["encrypted_metadata_tag"])
+    if int(entry.get("encrypted_metadata_len", -1)) != len(ciphertext):
+        raise ValueError("metadata length mismatch")
+    plain = aes_decrypt(metadata_key, b64d(entry["encrypted_metadata_nonce"]), ciphertext, aad=canonical_json(aad_fields))
+    return json.loads(plain.decode("utf-8"))
+
+
+def _v22_metadata_key(root_vkp_seed: bytes, schema_id: str) -> bytes:
+    return hkdf(root_vkp_seed, salt=schema_id.encode("utf-8"), info=b"veil-offline-envelope-metadata-core-v2.2")
+
+
+def _hint(value: str, msg_id: bytes) -> str:
+    return b64e(hmac.digest(value.encode("utf-8"), msg_id, "sha256")[:12])
+
+
+def _v22_entries(package: dict) -> list[dict]:
+    entries = package.get("entries")
+    if isinstance(entries, list) and entries:
+        return entries
+    return [package]
+
+
+def _json_for_embedding(package: dict, *, low_signature: bool) -> bytes:
+    if low_signature:
+        return json.dumps(_shuffle_dict(package), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return canonical_json(package)
+
+
+def _shuffle_dict(data):
+    if isinstance(data, dict):
+        items = list(data.items())
+        secrets.SystemRandom().shuffle(items)
+        return {key: _shuffle_dict(value) for key, value in items}
+    if isinstance(data, list):
+        return [_shuffle_dict(value) for value in data]
+    return data
+
+
 def _extract_v2_package(path: str | Path, *, required: bool) -> dict | None:
+    package22 = _extract_v22_package(path, required=False)
+    if package22 is not None:
+        return None
     raw = Path(path).read_bytes()
     marker = f'"kind":"{V2_PACKAGE_KIND}"'.encode("utf-8")
     start_at = 0
@@ -537,6 +977,52 @@ def _extract_v2_package(path: str | Path, *, required: bool) -> dict | None:
             candidate = start
         start_at = marker_pos + len(marker)
         continue
+
+
+def _extract_v22_package(path: str | Path, *, required: bool) -> dict | None:
+    raw = Path(path).read_bytes()
+    markers = [
+        f'"crypto_core_version":"{CRYPTO_CORE_VERSION_22}"'.encode("utf-8"),
+        f'"protocol_family":"{PROTOCOL_FAMILY}"'.encode("utf-8"),
+    ]
+    starts = sorted({pos for marker in markers for pos in _find_all(raw, marker)})
+    fallback: dict | None = None
+    for marker_pos in starts:
+        candidate = marker_pos
+        while True:
+            start = raw.rfind(b"{", 0, candidate + 1)
+            if start < 0:
+                break
+            end = _json_object_end(raw, start)
+            if end is None or end <= marker_pos:
+                candidate = start - 1
+                continue
+            try:
+                data = json.loads(raw[start:end].decode("utf-8"))
+            except Exception:
+                candidate = start - 1
+                continue
+            if data.get("protocol_family") == PROTOCOL_FAMILY and str(data.get("crypto_core_version")) == CRYPTO_CORE_VERSION_22:
+                if isinstance(data.get("entries"), list):
+                    return data
+                fallback = fallback or data
+            candidate = start - 1
+    if fallback is not None:
+        return fallback
+    if required:
+        raise VeilDecryptError("Unable to open message.")
+    return None
+
+
+def _find_all(raw: bytes, marker: bytes) -> list[int]:
+    out = []
+    start = 0
+    while True:
+        pos = raw.find(marker, start)
+        if pos < 0:
+            return out
+        out.append(pos)
+        start = pos + len(marker)
 
 
 def _json_object_end(raw: bytes, start: int) -> int | None:
@@ -774,11 +1260,18 @@ def _transactional_unpack(archive: bytes, output_dir: str | Path) -> list[Path]:
     staging = parent / f".veil-recover-{final.name}-{random_b64(8)}"
     if staging.exists():
         raise VeilError("recovery staging path collision")
-    written = unpack_payload(archive, staging)
-    if final.exists():
-        raise VeilError("output directory changed during recovery")
-    os.replace(staging, final)
-    return [final / path.relative_to(staging) for path in written]
+    try:
+        written = unpack_payload(archive, staging)
+        if final.exists():
+            raise VeilError("output directory changed during recovery")
+        os.replace(staging, final)
+        return [final / path.relative_to(staging) for path in written]
+    except Exception:
+        if staging.exists():
+            import shutil
+
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def _wrap_file_key(file_key: bytes, layer_id: str, recipient: PublicIdentity) -> dict:

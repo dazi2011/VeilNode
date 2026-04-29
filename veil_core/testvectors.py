@@ -6,6 +6,9 @@ from .crypto import FAST_KDF, _xchacha20_subkey_and_nonce, b64e, derive_message_
 from .protocol import current_protocol, protocol_v2
 
 
+CRYPTO_CORE_VERSION_22 = "2.2"
+
+
 VECTOR = {
     "name": "veil-xchacha20poly1305-v1",
     "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -54,6 +57,8 @@ def run_vectors() -> dict:
             {
                 "name": VECTOR_V2["name"],
                 "protocol": protocol_v2(),
+                "protocol_family": "veil-offline-envelope",
+                "crypto_core_version": CRYPTO_CORE_VERSION_22,
                 "vkp_i": b64e(vkp_i),
                 "expected_vkp_i": VECTOR_V2["expected_vkp_i_b64"],
                 "message_key": b64e(message_key),
