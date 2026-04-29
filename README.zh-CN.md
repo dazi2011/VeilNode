@@ -195,8 +195,6 @@ veil-node keypart root import --in root.txt --out imported.vkpseed --password ro
 
 ## Veil Offline Envelope Crypto Core v2.2
 
-`crypto_core_version = "2.2"` 表示离线信封加密内核版本，不是 VeilNode Suite 整体版本，也不是 Python 包版本。本次不要、也没有把 Suite version 改成 2.2。
-
 v2.2 新消息使用：
 
 ```json
