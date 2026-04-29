@@ -145,7 +145,6 @@ veil-node keypart root import --in root.txt --out imported.vkpseed --password ro
 
 ## Veil Offline Envelope Crypto Core v2.2
 
-`crypto_core_version = "2.2"` is the offline envelope crypto core version. It is not the VeilNode Suite package version, and this repository does not change the Python package version to 2.2.
 
 New v2.2 messages use:
 
