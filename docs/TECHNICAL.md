@@ -41,7 +41,8 @@ This is an engineering goal, not an absolute security guarantee. The project use
 - `profile`: `dev`, `balanced`, `hardened` security levels.
 - `platform`: `SecureStore`, `DeviceBinding`, `FileProvider` interface boundaries.
 - `diagnostics`: doctor, audit and platform reports.
-- `api`: `VeilAPI` facade for CLI, GUI, mobile and NAS bindings.
+- `api`: `VeilAPI` facade for CLI, desktop GUI and mobile bindings.
+- `strategy`: Adaptive Envelope Policy Engine for feature extraction, legal policy generation, local dry-run selection, engineering risk scoring, dataset collection and heuristic ranking.
 
 ## File Formats
 
@@ -106,7 +107,7 @@ Root file v2 public metadata:
 
 The seed is encrypted at rest. `metadata_mac` is checked after decrypting the root so tampering with epoch, status or fingerprint is rejected. `inspect` never prints the seed.
 
-v2.2 message outer metadata keeps only recovery hints and encrypted metadata fields:
+v2.2 normal-mode message outer metadata keeps only recovery hints and encrypted metadata fields:
 
 ```json
 {
@@ -123,6 +124,8 @@ v2.2 message outer metadata keeps only recovery hints and encrypted metadata fie
 
 Inner encrypted metadata includes `msg_id`, `message_salt`, `file_hash`, `receiver_id`, `root_id`, `root_fingerprint`, `root_epoch`, KDF parameters, flags and encrypted payload recovery data. It must not contain `root_vkp`, `vkp_i` or `message_key`.
 
+Low-signature v2.2 serializes the same outer data with short neutral keys before embedding, then expands it back in memory during open. This keeps `crypto_core_version` and `veil-offline-envelope` inside local code and encrypted metadata semantics instead of leaving those fixed strings visible in carrier bytes.
+
 Root lifecycle:
 
 - `active`: may seal and open.
@@ -137,9 +140,57 @@ Shamir backup uses GF(256) threshold shares. A single share does not reveal the 
 
 Decoy mode stores independently authenticated real and decoy payload layers in one carrier. Correct real credentials open the real payload; correct decoy credentials open the decoy payload; other errors use the same generic failure path. This is coercion-resistance assistance, not perfect deniable encryption.
 
-Low-signature mode is explicit (`--low-signature`) and supports conservative, balanced and aggressive profiles. It randomizes metadata ordering and carrier labels where supported and avoids fixed plaintext strings such as `VeilNode`, `veil-msg`, `root_vkp`, `vkp_i` and `message_key` in v2.2 low-signature carriers.
+Low-signature mode is explicit (`--low-signature`) and supports conservative, balanced and aggressive profiles. It randomizes metadata ordering and carrier labels where supported and avoids fixed plaintext strings such as `VeilNode`, `veil-msg`, `root_vkp`, `vkp_i`, `message_key`, `crypto_core_version` and `veil-offline-envelope` in v2.2 low-signature carriers.
 
 Carrier audit/compare/profile commands produce local engineering risk scores. They do not prove that a carrier is safe or impossible to classify as unusual.
+
+## Adaptive Envelope Policy Engine
+
+The adaptive policy engine does not generate cryptographic algorithms and does not change key derivation. It selects only envelope policies:
+
+```json
+{
+  "policy_version": 1,
+  "crypto_core_version": "2.2",
+  "carrier_format": "zip",
+  "embed_strategy": "zip_stored_member",
+  "chunk_profile": "mixed_medium",
+  "padding_profile": "mimic-carrier",
+  "metadata_layout": "encrypted_split",
+  "locator_strategy": "keyed_locator_v2",
+  "low_signature": true,
+  "risk_budget": 0.25
+}
+```
+
+The selector flow is:
+
+1. Extract carrier and payload features.
+2. Generate legal policy candidates from the strategy registry.
+3. Optionally rank candidates with a local `model.json`.
+4. Dry-run candidate embedding in a temporary directory.
+5. Run `verify-carrier`.
+6. Run carrier audit and compare.
+7. Run strategy score and fixed-signature scan.
+8. Select the lowest scoring candidate that survived verification.
+9. Clean temporary files.
+
+The scorer is a local engineering score only. Lower is better. Parser failure is high risk. Fixed plaintext signatures add penalty. The score is not a detectability proof and is not tailored to bypass any specific analysis product.
+
+Policy, dataset and model files must not contain root seeds, `root_vkp`, `vkp_i`, `message_key`, passwords or private keys. Dataset rows may contain non-sensitive statistics and short payload hash prefixes. The first model is a portable `heuristic_ranker`; it learns observed strategy scores by carrier format, strategy name and payload-ratio bucket. Future models can rank candidates differently, but verifier/audit/compare/score remain mandatory.
+
+Main commands:
+
+```bash
+veil-node strategy features --carrier cover.zip --payload secret.txt --json
+veil-node strategy generate --carrier cover.zip --payload secret.txt --count 50 --json
+veil-node strategy select --carrier cover.zip --payload secret.txt --count 50 --json
+veil-node strategy score --before cover.zip --after message.zip --policy selected.policy.json --json
+veil-node strategy scan-signature --input message.zip --json
+veil-node strategy collect --samples-dir samples --payloads-dir payloads --out dataset.jsonl
+veil-node strategy train --dataset dataset.jsonl --out model.json
+veil-node strategy model inspect --in model.json
+```
 
 ### `.vpkg` Veil Node Package
 

@@ -51,7 +51,7 @@ def carrier_bytes(fmt: str, carrier: str | Path | None = None) -> bytes:
     return generate_carrier(fmt)
 
 
-def embed_payload(carrier: bytes, payload: bytes, fmt: str) -> EmbedResult:
+def embed_payload(carrier: bytes, payload: bytes, fmt: str, *, strategy: str | None = None) -> EmbedResult:
     fmt = normalize_format(fmt)
     if fmt == "png":
         return _embed_png(carrier, payload)
@@ -60,6 +60,8 @@ def embed_payload(carrier: bytes, payload: bytes, fmt: str) -> EmbedResult:
     if fmt == "mp4":
         return _embed_mp4(carrier, payload)
     if fmt == "zip":
+        if strategy == "zip_comment":
+            return _embed_zip_comment(carrier, payload)
         return _embed_zip(carrier, payload)
     if fmt == "pdf":
         return _embed_pdf(carrier, payload)
@@ -212,6 +214,22 @@ def _embed_zip(carrier: bytes, payload: bytes) -> EmbedResult:
     name_len, extra_len = struct.unpack_from("<HH", data, header_offset + 26)
     offset = header_offset + 30 + name_len + extra_len
     return EmbedResult(data, offset, len(payload), "zip-stored-member", "zip", {"member": name})
+
+
+def _embed_zip_comment(carrier: bytes, payload: bytes) -> EmbedResult:
+    if len(payload) > 65535:
+        raise VeilError("payload too large for ZIP comment strategy")
+    buf = io.BytesIO(carrier)
+    try:
+        with zipfile.ZipFile(buf, "a", compression=zipfile.ZIP_STORED) as zf:
+            zf.comment = payload
+    except zipfile.BadZipFile as exc:
+        raise VeilError("invalid ZIP carrier") from exc
+    data = buf.getvalue()
+    offset = data.rfind(payload)
+    if offset < 0:
+        raise VeilError("ZIP comment embedding failed")
+    return EmbedResult(data, offset, len(payload), "zip-comment", "zip", {})
 
 
 def _embed_pdf(carrier: bytes, payload: bytes) -> EmbedResult:

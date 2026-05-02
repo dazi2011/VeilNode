@@ -50,6 +50,18 @@ from .profile import SECURITY_LEVELS, build_profile, profile_summary, write_prof
 from .repair import migrate_keypart, recovery_scan, repair_keypart
 from .replay import forget_seen, list_seen, seen_db_path, vacuum_seen
 from .safety import secure_delete
+from .strategy.dataset import collect_dataset
+from .strategy.features import extract_features
+from .strategy.generator import generate_policies
+from .strategy.model import inspect_model
+from .strategy.policy import EnvelopePolicy
+from .strategy.policy import inspect_policy as inspect_envelope_policy
+from .strategy.policy import load_policy_file as load_envelope_policy_file
+from .strategy.policy import save_policy_file as save_envelope_policy_file
+from .strategy.registry import list_strategies
+from .strategy.scorer import scan_fixed_signatures, score_json
+from .strategy.selector import select_policy
+from .strategy.trainer import train as train_strategy_model
 from .testvectors import run_vectors
 
 
@@ -74,6 +86,7 @@ RESERVED_SUBCOMMANDS = {
     "secure-delete",
     "package",
     "test-vector",
+    "strategy",
     "nodepkg",
     "factory",
 }
@@ -168,6 +181,11 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     send.add_argument("--low-signature", action="store_true")
     send.add_argument("--signature-profile", choices=["conservative", "balanced", "aggressive"], default="balanced")
     send.add_argument("--carrier-profile")
+    send.add_argument("--adaptive-policy", action="store_true")
+    send.add_argument("--policy-candidates", type=int, default=50)
+    send.add_argument("--policy-out")
+    send.add_argument("--policy-in")
+    send.add_argument("--policy-model")
     send.add_argument("--work-dir")
     send.add_argument("--keep-temp-debug", action="store_true")
     send.add_argument("--redact-logs", action="store_true", default=True)
@@ -193,6 +211,11 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     seal.add_argument("--low-signature", action="store_true")
     seal.add_argument("--signature-profile", choices=["conservative", "balanced", "aggressive"], default="balanced")
     seal.add_argument("--carrier-profile")
+    seal.add_argument("--adaptive-policy", action="store_true")
+    seal.add_argument("--policy-candidates", type=int, default=50)
+    seal.add_argument("--policy-out")
+    seal.add_argument("--policy-in")
+    seal.add_argument("--policy-model")
     seal.add_argument("--decoy-input")
     seal.add_argument("--decoy-password")
     seal.add_argument("--decoy-pad-match", choices=["real", "fixed", "random"], default="real")
@@ -391,6 +414,50 @@ def _build_parser(policy: dict, profile_path: str | None, home_path: str) -> arg
     carrier_profile_inspect = carrier_profile_sub.add_parser("inspect")
     carrier_profile_inspect.add_argument("--in", dest="input", required=True)
 
+    strategy_cmd = sub.add_parser("strategy", help="adaptive envelope policy engine")
+    strategy_sub = strategy_cmd.add_subparsers(dest="strategy_command", required=True)
+    strategy_features = strategy_sub.add_parser("features")
+    strategy_features.add_argument("--carrier", required=True)
+    strategy_features.add_argument("--payload", required=True)
+    strategy_features.add_argument("--json", action="store_true")
+    strategy_policy = strategy_sub.add_parser("policy")
+    strategy_policy_sub = strategy_policy.add_subparsers(dest="policy_command", required=True)
+    strategy_policy_inspect = strategy_policy_sub.add_parser("inspect")
+    strategy_policy_inspect.add_argument("--in", dest="input", required=True)
+    strategy_list = strategy_sub.add_parser("list")
+    strategy_list.add_argument("--format")
+    strategy_generate = strategy_sub.add_parser("generate")
+    strategy_generate.add_argument("--carrier", required=True)
+    strategy_generate.add_argument("--payload", required=True)
+    strategy_generate.add_argument("--count", type=int, default=50)
+    strategy_generate.add_argument("--json", action="store_true")
+    strategy_score = strategy_sub.add_parser("score")
+    strategy_score.add_argument("--before", required=True)
+    strategy_score.add_argument("--after", required=True)
+    strategy_score.add_argument("--policy", required=True)
+    strategy_score.add_argument("--json", action="store_true")
+    strategy_select = strategy_sub.add_parser("select")
+    strategy_select.add_argument("--carrier", required=True)
+    strategy_select.add_argument("--payload", required=True)
+    strategy_select.add_argument("--count", type=int, default=50)
+    strategy_select.add_argument("--policy-model")
+    strategy_select.add_argument("--json", action="store_true")
+    strategy_collect = strategy_sub.add_parser("collect")
+    strategy_collect.add_argument("--samples-dir", required=True)
+    strategy_collect.add_argument("--payloads-dir", required=True)
+    strategy_collect.add_argument("--out", required=True)
+    strategy_collect.add_argument("--candidates-per-sample", type=int, default=30)
+    strategy_train = strategy_sub.add_parser("train")
+    strategy_train.add_argument("--dataset", required=True)
+    strategy_train.add_argument("--out", required=True)
+    strategy_model = strategy_sub.add_parser("model")
+    strategy_model_sub = strategy_model.add_subparsers(dest="model_command", required=True)
+    strategy_model_inspect = strategy_model_sub.add_parser("inspect")
+    strategy_model_inspect.add_argument("--in", dest="input", required=True)
+    strategy_scan = strategy_sub.add_parser("scan-signature")
+    strategy_scan.add_argument("--input", required=True)
+    strategy_scan.add_argument("--json", action="store_true")
+
     safe = sub.add_parser("secure-delete", help="overwrite and delete a local file with explicit confirmation")
     safe.add_argument("--path", required=True)
     safe.add_argument("--dry-run", action="store_true")
@@ -476,7 +543,8 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         elif not keypart_path:
             raise VeilError("send requires --keypart for v1 messages or --root-keypart for v2 messages")
         carrier_profile = _load_json_file(args.carrier_profile) if args.carrier_profile else None
-        return create_message(
+        envelope_policy = _envelope_policy_from_args(args, carrier_path=args.carrier, payload_path=args.input)
+        result = create_message(
             input_path=args.input,
             output_path=args.output,
             keypart_path=keypart_path,
@@ -495,7 +563,11 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
             low_signature=args.low_signature,
             signature_profile=args.signature_profile,
             carrier_profile=carrier_profile,
+            envelope_policy=envelope_policy,
         )
+        if args.policy_out and envelope_policy is not None:
+            result["policy_out"] = save_envelope_policy_file(envelope_policy, args.policy_out)
+        return result
     if command == "seal":
         password = _secret(args.password, "message password")
         recipients = [store.resolve_recipient(value) for value in args.recipient]
@@ -520,7 +592,8 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
             state_dir.mkdir(parents=True, exist_ok=True)
             auth_state = state_dir / f"auth-{random.getrandbits(64):016x}.json"
         carrier_profile = _load_json_file(args.carrier_profile) if args.carrier_profile else None
-        return create_message(
+        envelope_policy = _envelope_policy_from_args(args, carrier_path=args.carrier, payload_path=args.input)
+        result = create_message(
             input_path=args.input,
             output_path=output,
             keypart_path=keypart_path,
@@ -539,7 +612,11 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
             low_signature=args.low_signature,
             signature_profile=args.signature_profile,
             carrier_profile=carrier_profile,
+            envelope_policy=envelope_policy,
         )
+        if args.policy_out and envelope_policy is not None:
+            result["policy_out"] = save_envelope_policy_file(envelope_policy, args.policy_out)
+        return result
     if command == "receive":
         password = _secret(args.password, "message password")
         identity_password = _secret(args.identity_password, "identity password")
@@ -664,6 +741,8 @@ def _dispatch(args: argparse.Namespace, policy: dict, home: Path) -> dict | None
         return _migrate(args)
     if command == "carrier":
         return _carrier(args)
+    if command == "strategy":
+        return _strategy(args)
     if command == "secure-delete":
         if args.yes and args.confirm_text != "DELETE":
             raise VeilError("secure-delete requires --confirm-text DELETE when --yes is used")
@@ -822,6 +901,32 @@ def _carrier(args: argparse.Namespace) -> dict:
     raise VeilError(f"unknown carrier command: {args.carrier_command}")
 
 
+def _strategy(args: argparse.Namespace) -> dict:
+    if args.strategy_command == "features":
+        return extract_features(args.carrier, args.payload)
+    if args.strategy_command == "policy":
+        if args.policy_command == "inspect":
+            return inspect_envelope_policy(args.input)
+    if args.strategy_command == "list":
+        return list_strategies(args.format)
+    if args.strategy_command == "generate":
+        return generate_policies(args.carrier, args.payload, count=args.count, low_signature=True)
+    if args.strategy_command == "score":
+        return score_json(args.before, args.after, args.policy)
+    if args.strategy_command == "select":
+        return select_policy(args.carrier, args.payload, count=args.count, model_path=args.policy_model, low_signature=True)
+    if args.strategy_command == "collect":
+        return collect_dataset(args.samples_dir, args.payloads_dir, args.out, candidates_per_sample=args.candidates_per_sample)
+    if args.strategy_command == "train":
+        return train_strategy_model(args.dataset, args.out)
+    if args.strategy_command == "model":
+        if args.model_command == "inspect":
+            return inspect_model(args.input)
+    if args.strategy_command == "scan-signature":
+        return scan_fixed_signatures(args.input)
+    raise VeilError(f"unknown strategy command: {args.strategy_command}")
+
+
 def _factory(args: argparse.Namespace) -> dict:
     containers = _containers(args.containers)
     if args.factory_command == "create-node":
@@ -890,3 +995,26 @@ def _load_json_file(path: str | None) -> dict | None:
     if not path:
         return None
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _envelope_policy_from_args(args: argparse.Namespace, *, carrier_path: str | Path | None, payload_path: str | Path):
+    if getattr(args, "policy_in", None):
+        policy = load_envelope_policy_file(args.policy_in)
+        policy.validate()
+        if carrier_path:
+            validation = verify_carrier(carrier_path, policy.carrier_format)
+            if not validation.get("ok"):
+                raise VeilError("policy-in carrier failed verify-carrier")
+        return policy
+    if getattr(args, "adaptive_policy", False):
+        if not carrier_path:
+            raise VeilError("--adaptive-policy requires an explicit carrier file")
+        selected = select_policy(
+            carrier_path,
+            payload_path,
+            count=max(1, int(getattr(args, "policy_candidates", 50))),
+            model_path=getattr(args, "policy_model", None),
+            low_signature=True,
+        )
+        return EnvelopePolicy.from_json(selected["selected_policy"])
+    return None

@@ -37,6 +37,8 @@ from .identity import PrivateIdentity, PublicIdentity
 from .padding import padding_len
 from .protocol import assert_supported, current_protocol, protocol_v2
 from .replay import assert_not_seen, mark_seen
+from .strategy.policy import EnvelopePolicy, policy_runtime_overrides
+from .strategy.scorer import scan_fixed_signatures
 
 
 DEFAULT_POLICY = {
@@ -109,6 +111,14 @@ def load_policy(path: str | Path | None = None) -> dict:
     return policy
 
 
+def _normalize_envelope_policy(envelope_policy: dict | EnvelopePolicy | None, fmt: str) -> EnvelopePolicy | None:
+    if envelope_policy is None:
+        return None
+    policy = envelope_policy if isinstance(envelope_policy, EnvelopePolicy) else EnvelopePolicy.from_json(envelope_policy)
+    policy.validate(expected_format=fmt)
+    return policy
+
+
 def create_message(
     *,
     input_path: str | Path,
@@ -129,12 +139,16 @@ def create_message(
     low_signature: bool = False,
     signature_profile: str = "balanced",
     carrier_profile: dict | None = None,
+    envelope_policy: dict | EnvelopePolicy | None = None,
 ) -> dict:
     cfg = load_policy(None)
     if policy:
         cfg.update(policy)
         cfg["kdf"] = kdf_params(cfg.get("kdf"))
     fmt = normalize_format(container_format, carrier_path or output_path)
+    selected_envelope_policy = _normalize_envelope_policy(envelope_policy, fmt)
+    if selected_envelope_policy is not None:
+        cfg.update(policy_runtime_overrides(selected_envelope_policy))
     if fmt not in set(cfg.get("supported_containers", [])):
         raise VeilError(f"container format not enabled by policy: {fmt}")
     recipient_list = list(recipients)
@@ -160,6 +174,7 @@ def create_message(
                 low_signature=low_signature,
                 signature_profile=signature_profile,
                 carrier_profile=carrier_profile,
+                envelope_policy=selected_envelope_policy,
             )
         return _create_message_v2(
             input_path=input_path,
@@ -205,7 +220,7 @@ def create_message(
 
     aggregate, relative = _aggregate_layers(builds, cfg)
     carrier = carrier_bytes(fmt, carrier_path)
-    embedded = embed_payload(carrier, aggregate, fmt)
+    embedded = embed_payload(carrier, aggregate, fmt, strategy=selected_envelope_policy.embed_strategy if selected_envelope_policy else None)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(embedded.data)
@@ -252,6 +267,7 @@ def create_message(
         "format": fmt,
         "layers": len(builds),
         "container_mode": embedded.mode,
+        "envelope_policy": selected_envelope_policy.to_json() if selected_envelope_policy else None,
     }
 
 
@@ -476,6 +492,7 @@ def _create_message_v22(
     low_signature: bool,
     signature_profile: str,
     carrier_profile: dict | None,
+    envelope_policy: EnvelopePolicy | None,
 ) -> dict:
     if len(recipients) != 1:
         raise VeilError("crypto core v2.2 root-keypart mode currently supports exactly one recipient")
@@ -522,13 +539,21 @@ def _create_message_v22(
         signature_profile=signature_profile,
     )
     carrier = carrier_bytes(fmt, carrier_path)
-    embedded = embed_payload(carrier, _json_for_embedding(package, low_signature=low_signature), fmt)
+    embedded = embed_payload(
+        carrier,
+        _json_for_embedding(package, low_signature=low_signature),
+        fmt,
+        strategy=envelope_policy.embed_strategy if envelope_policy else None,
+    )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(embedded.data)
     validation = verify_container(output, fmt)
     if not validation["ok"]:
         raise VeilError(f"container verification failed for {fmt}")
+    signature_scan = scan_fixed_signatures(output)
+    if low_signature and signature_scan["found_plain_signatures"]:
+        raise VeilError("low-signature output contains fixed plaintext signature")
     if auth_state_path and not low_signature:
         _write_auth_state(auth_state_path, [build.auth_record for build in builds])
     return {
@@ -549,6 +574,8 @@ def _create_message_v22(
         "carrier_profile_used": bool(carrier_profile),
         "container_mode": embedded.mode,
         "container_validation": validation,
+        "envelope_policy": envelope_policy.to_json() if envelope_policy else None,
+        "fixed_signature_scan": signature_scan,
     }
 
 
@@ -931,7 +958,7 @@ def _v22_entries(package: dict) -> list[dict]:
 
 def _json_for_embedding(package: dict, *, low_signature: bool) -> bytes:
     if low_signature:
-        return json.dumps(_shuffle_dict(package), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return json.dumps(_shuffle_dict(_v22_alias_package(package)), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return canonical_json(package)
 
 
@@ -1009,9 +1036,73 @@ def _extract_v22_package(path: str | Path, *, required: bool) -> dict | None:
             candidate = start - 1
     if fallback is not None:
         return fallback
+    alias = _extract_v22_alias_package(raw)
+    if alias is not None:
+        return alias
     if required:
         raise VeilDecryptError("Unable to open message.")
     return None
+
+
+def _v22_alias_package(package: dict) -> dict:
+    def alias_entry(entry: dict) -> dict:
+        return {
+            "a": entry["metadata_schema_id"],
+            "b": entry["encrypted_metadata_len"],
+            "c": entry["encrypted_metadata_nonce"],
+            "d": entry["encrypted_metadata_tag"],
+            "e": entry["encrypted_metadata"],
+            "f": entry["root_hint"],
+            "g": entry["receiver_hint"],
+        }
+
+    aliased = alias_entry(package)
+    entries = package.get("entries")
+    if isinstance(entries, list) and entries:
+        aliased["h"] = [alias_entry(entry) for entry in entries]
+    return aliased
+
+
+def _unalias_v22_entry(entry: dict) -> dict:
+    return {
+        "protocol_family": PROTOCOL_FAMILY,
+        "crypto_core_version": CRYPTO_CORE_VERSION_22,
+        "metadata_schema_id": entry["a"],
+        "encrypted_metadata_len": int(entry["b"]),
+        "encrypted_metadata_nonce": entry["c"],
+        "encrypted_metadata_tag": entry["d"],
+        "encrypted_metadata": entry["e"],
+        "root_hint": entry["f"],
+        "receiver_hint": entry["g"],
+    }
+
+
+def _extract_v22_alias_package(raw: bytes) -> dict | None:
+    for start in _find_all(raw, b"{"):
+        end = _json_object_end(raw, start)
+        if end is None:
+            continue
+        try:
+            data = json.loads(raw[start:end].decode("utf-8"))
+        except Exception:
+            continue
+        if not _looks_like_v22_alias(data):
+            continue
+        package = _unalias_v22_entry(data)
+        entries = data.get("h")
+        if isinstance(entries, list) and entries:
+            package["entries"] = [_unalias_v22_entry(entry) for entry in entries if _looks_like_v22_alias(entry)]
+        return package
+    return None
+
+
+def _looks_like_v22_alias(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    required = {"a", "b", "c", "d", "e", "f", "g"}
+    if not required.issubset(data.keys()):
+        return False
+    return all(isinstance(data[key], (str, int)) for key in required)
 
 
 def _find_all(raw: bytes, marker: bytes) -> list[int]:

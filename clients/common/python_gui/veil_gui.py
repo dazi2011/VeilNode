@@ -29,6 +29,7 @@ class VeilNodeGui(tk.Tk):
         tabs.add(self._open(tabs), text="Open")
         tabs.add(self._root_tools(tabs), text="Roots")
         tabs.add(self._carrier_tools(tabs), text="Carrier")
+        tabs.add(self._strategy_tools(tabs), text="Strategy")
         tabs.add(self._contacts(tabs), text="Contacts")
         tabs.add(self._advanced_cli(tabs), text="CLI")
 
@@ -47,12 +48,16 @@ class VeilNodeGui(tk.Tk):
         output_dir = tk.StringVar(value="No output folder selected")
         root_keypart = tk.StringVar(value="No root keypart selected")
         carrier_profile = tk.StringVar(value="No carrier profile selected")
+        policy_model = tk.StringVar(value="No policy model selected")
+        policy_out = tk.StringVar(value="No policy output selected")
         decoy_input = tk.StringVar(value="No decoy selected")
         recipient = tk.StringVar()
         message_password = tk.StringVar()
         root_password = tk.StringVar()
         decoy_password = tk.StringVar()
         low_signature = tk.BooleanVar(value=True)
+        adaptive_policy = tk.BooleanVar(value=True)
+        policy_candidates = tk.StringVar(value="20")
         signature_profile = tk.StringVar(value="balanced")
         inputs_label = tk.StringVar(value="No inputs selected")
 
@@ -69,15 +74,18 @@ class VeilNodeGui(tk.Tk):
                 inputs_label.set(f"{len(inputs)} input(s) selected")
 
         ttk.Radiobutton(frame, text="Root keypart v2", variable=mode, value="root").pack(anchor=tk.W)
-        ttk.Radiobutton(frame, text="External keypart v1", variable=mode, value="external").pack(anchor=tk.W)
         ttk.Checkbutton(frame, text="Use crypto core 2.2 low-signature", variable=low_signature).pack(anchor=tk.W)
+        ttk.Checkbutton(frame, text="Adaptive envelope policy", variable=adaptive_policy).pack(anchor=tk.W)
         ttk.Combobox(frame, textvariable=signature_profile, values=["conservative", "balanced", "aggressive"], state="readonly").pack(fill=tk.X, pady=(0, 8))
+        self._entry(frame, "Policy candidates", policy_candidates)
         self._picker_row(frame, "Inputs", inputs_label, choose_inputs)
         ttk.Button(frame, text="Add input folder", command=add_input_folder).pack(anchor=tk.W, pady=(0, 8))
         self._picker_row(frame, "Cover", cover, lambda: self._set_file(cover))
         self._picker_row(frame, "Output folder", output_dir, lambda: self._set_dir(output_dir))
         self._picker_row(frame, "Root keypart", root_keypart, lambda: self._set_file(root_keypart))
         self._picker_row(frame, "Carrier profile", carrier_profile, lambda: self._set_file(carrier_profile))
+        self._picker_row(frame, "Policy model", policy_model, lambda: self._set_file(policy_model))
+        self._picker_row(frame, "Policy output", policy_out, lambda: self._set_save_file(policy_out))
         self._picker_row(frame, "Decoy input", decoy_input, lambda: self._set_file(decoy_input))
         self._entry(frame, "Recipient alias", recipient)
         self._entry(frame, "Message password", message_password, show="*")
@@ -97,9 +105,15 @@ class VeilNodeGui(tk.Tk):
                 if mode.get() == "root":
                     if root_keypart.get().startswith("No "):
                         return []
-                    args += ["--root-keypart", root_keypart.get(), "--root-keypart-password", root_password.get(), "--no-external-keypart", "--crypto-core", "2.2"]
+                    args += ["--root-keypart", root_keypart.get(), "--root-keypart-password", root_password.get(), "--crypto-core", "2.2"]
                     if low_signature.get():
                         args += ["--low-signature", "--signature-profile", signature_profile.get()]
+                    if adaptive_policy.get():
+                        args += ["--adaptive-policy", "--policy-candidates", policy_candidates.get() or "20"]
+                    if not policy_model.get().startswith("No "):
+                        args += ["--policy-model", policy_model.get()]
+                    if not policy_out.get().startswith("No "):
+                        args += ["--policy-out", policy_out.get()]
                     if not carrier_profile.get().startswith("No "):
                         args += ["--carrier-profile", carrier_profile.get()]
                     if not decoy_input.get().startswith("No "):
@@ -226,6 +240,34 @@ class VeilNodeGui(tk.Tk):
         ttk.Button(frame, text="Compare", command=lambda: self.run(["carrier", "compare", "--before", before.get(), "--after", after.get(), "--json"])).pack(anchor=tk.W)
         ttk.Button(frame, text="Create profile", command=lambda: self.run(["carrier", "profile", "create", "--samples", samples.get(), "--out", profile.get()])).pack(anchor=tk.W)
         ttk.Button(frame, text="Inspect profile", command=lambda: self.run(["carrier", "profile", "inspect", "--in", profile.get()])).pack(anchor=tk.W)
+        return frame
+
+    def _strategy_tools(self, parent: ttk.Notebook) -> ttk.Frame:
+        frame = ttk.Frame(parent, padding=12)
+        carrier = tk.StringVar(value="No carrier selected")
+        payload = tk.StringVar(value="No payload selected")
+        before = tk.StringVar(value="No before selected")
+        after = tk.StringVar(value="No after selected")
+        policy = tk.StringVar(value="No policy selected")
+        model = tk.StringVar(value="No model selected")
+        dataset = tk.StringVar(value="No dataset selected")
+        candidates = tk.StringVar(value="20")
+        self._picker_row(frame, "Carrier", carrier, lambda: self._set_file(carrier))
+        self._picker_row(frame, "Payload", payload, lambda: self._set_file(payload))
+        self._picker_row(frame, "Before", before, lambda: self._set_file(before))
+        self._picker_row(frame, "After", after, lambda: self._set_file(after))
+        self._picker_row(frame, "Policy", policy, lambda: self._set_file(policy))
+        self._picker_row(frame, "Model", model, lambda: self._set_file(model))
+        self._picker_row(frame, "Dataset", dataset, lambda: self._set_file(dataset))
+        self._entry(frame, "Candidates", candidates)
+        ttk.Button(frame, text="Features", command=lambda: self.run(["strategy", "features", "--carrier", carrier.get(), "--payload", payload.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Generate policies", command=lambda: self.run(["strategy", "generate", "--carrier", carrier.get(), "--payload", payload.get(), "--count", candidates.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Select policy", command=lambda: self.run(["strategy", "select", "--carrier", carrier.get(), "--payload", payload.get(), "--count", candidates.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Score output", command=lambda: self.run(["strategy", "score", "--before", before.get(), "--after", after.get(), "--policy", policy.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Scan signatures", command=lambda: self.run(["strategy", "scan-signature", "--input", after.get(), "--json"])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Inspect policy", command=lambda: self.run(["strategy", "policy", "inspect", "--in", policy.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Inspect model", command=lambda: self.run(["strategy", "model", "inspect", "--in", model.get()])).pack(anchor=tk.W)
+        ttk.Button(frame, text="Train model", command=lambda: self.run(["strategy", "train", "--dataset", dataset.get(), "--out", model.get()])).pack(anchor=tk.W)
         return frame
 
     def _advanced_cli(self, parent: ttk.Notebook) -> ttk.Frame:

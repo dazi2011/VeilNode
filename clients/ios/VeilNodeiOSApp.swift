@@ -10,7 +10,7 @@ struct VeilNodeiOSApp: App {
 }
 
 enum MobileTab: String, CaseIterable, Identifiable {
-  case inbox, seal, roots, carrier, contacts, settings
+  case inbox, seal, strategy, roots, carrier, contacts, settings
   var id: String { rawValue }
 }
 
@@ -25,6 +25,9 @@ struct MobileRootView: View {
       NavigationStack { MobileSealView() }
         .tabItem { Label("Seal", systemImage: "lock.doc") }
         .tag(MobileTab.seal)
+      NavigationStack { MobileStrategyView() }
+        .tabItem { Label("Strategy", systemImage: "chart.line.uptrend.xyaxis") }
+        .tag(MobileTab.strategy)
       NavigationStack { MobileRootsView() }
         .tabItem { Label("Roots", systemImage: "key") }
         .tag(MobileTab.roots)
@@ -55,9 +58,20 @@ struct MobileSealView: View {
   var body: some View {
     List {
       Label("Seal with crypto_core_version 2.2", systemImage: "lock.doc")
-      Label("Low-signature profiles and optional decoy payloads", systemImage: "folder")
+      Label("Adaptive policy, low-signature profiles and optional decoy payloads", systemImage: "folder")
     }
     .navigationTitle("Seal")
+  }
+}
+
+struct MobileStrategyView: View {
+  var body: some View {
+    List {
+      Label("Extract carrier and payload features", systemImage: "list.bullet.rectangle")
+      Label("Generate, rank and select envelope policies", systemImage: "shuffle")
+      Label("Scan fixed plaintext signatures and inspect model.json", systemImage: "magnifyingglass")
+    }
+    .navigationTitle("Strategy")
   }
 }
 
@@ -96,7 +110,7 @@ struct MobileSettingsView: View {
   var body: some View {
     List {
       Label("Offline-only shared core command surface", systemImage: "key")
-      Label("No Linux/NAS GUI release target", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+      Label("No Linux/NAS GUI release target; use CLI there", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
     }
     .navigationTitle("Settings")
   }

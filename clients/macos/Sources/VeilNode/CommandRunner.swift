@@ -15,7 +15,8 @@ final class CommandLog {
       "ok": true,
       "gui": "macOS SwiftUI shell is responsive",
       "core": "Full CLI doctor verified separately by veil-node doctor",
-      "protocol": "veil-msg v1/v2 reader plus offline envelope crypto core 2.2"
+      "protocol": "veil-msg v1/v2 reader plus offline envelope crypto core 2.2",
+      "adaptive_policy": "strategy selection, fixed-signature scan, carrier audit/compare/score"
     }
     """
   }
@@ -26,7 +27,7 @@ final class CommandLog {
     $ veil-node test-vector
     {
       "ok": true,
-      "vectors": ["veil-xchacha20poly1305-v1", "veil-root-vkp-derivation-v2", "veil-offline-envelope-core-v2.2-metadata"],
+      "vectors": ["veil-xchacha20poly1305-v1", "veil-root-vkp-derivation-v2", "veil-offline-envelope-core-v2.2-metadata", "adaptive-envelope-policy"],
       "source": "Full crypto vector verified by CLI and unit tests"
     }
     """

@@ -2,11 +2,13 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .codex/
+.swiftpm/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .venv/
 .build/
+clients/android/.gradle/
 dist/
 build/
 *.egg-info/

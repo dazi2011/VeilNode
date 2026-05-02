@@ -35,7 +35,11 @@ struct SealView: View {
   @State private var rootKeypartPassword = ""
   @State private var useRootKeypart = true
   @State private var lowSignature = true
+  @State private var adaptivePolicy = true
   @State private var signatureProfile = "balanced"
+  @State private var policyCandidates = "20"
+  @State private var policyModel: URL?
+  @State private var policyOutputPath = ""
 
   var body: some View {
     Form {
@@ -45,12 +49,14 @@ struct SealView: View {
       }
       .pickerStyle(.segmented)
       Toggle("Crypto core 2.2 low-signature", isOn: $lowSignature)
+      Toggle("Adaptive envelope policy", isOn: $adaptivePolicy)
       Picker("Signature profile", selection: $signatureProfile) {
         Text("Conservative").tag("conservative")
         Text("Balanced").tag("balanced")
         Text("Aggressive").tag("aggressive")
       }
       .pickerStyle(.segmented)
+      TextField("Policy candidates", text: $policyCandidates)
       FileSelectionRow(title: "Inputs", systemImage: "doc.badge.plus", value: inputSummary) {
         inputs = FileDialogs.pickInputs()
       }
@@ -66,6 +72,10 @@ struct SealView: View {
         }
         SecureField("Root keypart password", text: $rootKeypartPassword)
       }
+      FileSelectionRow(title: "Policy Model", systemImage: "brain", value: policyModel?.path ?? "Optional model.json") {
+        policyModel = FileDialogs.pickFile(allowedExtensions: ["json"])
+      }
+      TextField("Policy output path", text: $policyOutputPath)
       TextField("Recipient alias", text: $recipient)
       SecureField("Message password", text: $messagePassword)
       Button {
@@ -93,13 +103,104 @@ struct SealView: View {
       let output = outputDirectory.appendingPathComponent("\(base)\(suffix).sealed.\(ext)")
       var args = ["seal", input.path, carrier.path, output.path, "--to", recipient, "--password", messagePassword]
       if useRootKeypart, let rootKeypart {
-        args += ["--root-keypart", rootKeypart.path, "--root-keypart-password", rootKeypartPassword, "--no-external-keypart", "--crypto-core", "2.2"]
+        args += ["--root-keypart", rootKeypart.path, "--root-keypart-password", rootKeypartPassword, "--crypto-core", "2.2"]
         if lowSignature {
           args += ["--low-signature", "--signature-profile", signatureProfile]
+        }
+        if adaptivePolicy {
+          args += ["--adaptive-policy", "--policy-candidates", policyCandidates.isEmpty ? "20" : policyCandidates]
+        }
+        if let policyModel {
+          args += ["--policy-model", policyModel.path]
+        }
+        if !policyOutputPath.isEmpty {
+          args += ["--policy-out", policyOutputPath]
         }
       }
       return args
     }
+  }
+}
+
+struct RootsView: View {
+  @Environment(CommandLog.self) private var log
+  @State private var rootPath: URL?
+  @State private var outputPath = ""
+  @State private var password = ""
+
+  var body: some View {
+    Form {
+      FileSelectionRow(title: "Root Keypart", systemImage: "key", value: rootPath?.path ?? "Choose .vkpseed") {
+        rootPath = FileDialogs.pickFile(allowedExtensions: ["vkpseed", "txt"])
+      }
+      TextField("Output root path", text: $outputPath)
+      SecureField("Root password", text: $password)
+      HStack {
+        Button { Task { await log.run(["keypart", "root", "inspect", "--in", rootPath?.path ?? ""]) } } label: { Label("Inspect", systemImage: "info.circle") }
+        Button { Task { await log.run(["keypart", "root", "create", "--out", outputPath, "--password", password]) } } label: { Label("Create", systemImage: "plus.circle") }
+        Button { Task { await log.run(["keypart", "root", "rotate", "--in", rootPath?.path ?? "", "--out", outputPath, "--password", password]) } } label: { Label("Rotate", systemImage: "arrow.triangle.2.circlepath") }
+      }
+      ConsoleView(text: log.output, isRunning: log.isRunning)
+    }
+    .padding()
+  }
+}
+
+struct CarrierView: View {
+  @Environment(CommandLog.self) private var log
+  @State private var before: URL?
+  @State private var after: URL?
+
+  var body: some View {
+    Form {
+      FileSelectionRow(title: "Before", systemImage: "doc", value: before?.path ?? "Choose original carrier") {
+        before = FileDialogs.pickFile()
+      }
+      FileSelectionRow(title: "After", systemImage: "doc.fill", value: after?.path ?? "Choose output carrier") {
+        after = FileDialogs.pickFile()
+      }
+      HStack {
+        Button { Task { await log.run(["carrier", "audit", "--input", after?.path ?? "", "--json"]) } } label: { Label("Audit", systemImage: "checklist") }
+        Button { Task { await log.run(["carrier", "compare", "--before", before?.path ?? "", "--after", after?.path ?? "", "--json"]) } } label: { Label("Compare", systemImage: "arrow.left.arrow.right") }
+      }
+      ConsoleView(text: log.output, isRunning: log.isRunning)
+    }
+    .padding()
+  }
+}
+
+struct StrategyView: View {
+  @Environment(CommandLog.self) private var log
+  @State private var carrier: URL?
+  @State private var payload: URL?
+  @State private var before: URL?
+  @State private var after: URL?
+  @State private var policy: URL?
+  @State private var model: URL?
+  @State private var count = "20"
+
+  var body: some View {
+    Form {
+      FileSelectionRow(title: "Carrier", systemImage: "doc.richtext", value: carrier?.path ?? "Choose carrier") { carrier = FileDialogs.pickFile() }
+      FileSelectionRow(title: "Payload", systemImage: "doc.badge.plus", value: payload?.path ?? "Choose payload") { payload = FileDialogs.pickFile() }
+      FileSelectionRow(title: "Before", systemImage: "doc", value: before?.path ?? "Choose before") { before = FileDialogs.pickFile() }
+      FileSelectionRow(title: "After", systemImage: "doc.fill", value: after?.path ?? "Choose after") { after = FileDialogs.pickFile() }
+      FileSelectionRow(title: "Policy", systemImage: "slider.horizontal.3", value: policy?.path ?? "Choose selected.policy.json") { policy = FileDialogs.pickFile(allowedExtensions: ["json"]) }
+      FileSelectionRow(title: "Model", systemImage: "brain", value: model?.path ?? "Choose model.json") { model = FileDialogs.pickFile(allowedExtensions: ["json"]) }
+      TextField("Candidates", text: $count)
+      HStack {
+        Button { Task { await log.run(["strategy", "features", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--json"]) } } label: { Label("Features", systemImage: "list.bullet.rectangle") }
+        Button { Task { await log.run(["strategy", "generate", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Generate", systemImage: "shuffle") }
+        Button { Task { await log.run(["strategy", "select", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Select", systemImage: "checkmark.circle") }
+      }
+      HStack {
+        Button { Task { await log.run(["strategy", "score", "--before", before?.path ?? "", "--after", after?.path ?? "", "--policy", policy?.path ?? "", "--json"]) } } label: { Label("Score", systemImage: "gauge.medium") }
+        Button { Task { await log.run(["strategy", "scan-signature", "--input", after?.path ?? "", "--json"]) } } label: { Label("Scan", systemImage: "magnifyingglass") }
+        Button { Task { await log.run(["strategy", "model", "inspect", "--in", model?.path ?? ""]) } } label: { Label("Model", systemImage: "brain") }
+      }
+      ConsoleView(text: log.output, isRunning: log.isRunning)
+    }
+    .padding()
   }
 }
 

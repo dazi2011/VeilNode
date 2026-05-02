@@ -376,7 +376,9 @@ class Core22CliTests(unittest.TestCase):
         self.make_identity(home)
         root = self.make_root(home)
         msg = self.seal_core22(home, root)
-        self.assertIn(b'"crypto_core_version":"2.2"', msg.read_bytes())
+        self.assertNotIn(b'"crypto_core_version":"2.2"', msg.read_bytes())
+        opened = self.open_core22(home, root, msg, "meta-open", "--no-replay-check")
+        self.assertEqual(opened.returncode, 0)
 
     def test_core22_metadata_does_not_modify_suite_version(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -392,7 +394,9 @@ class Core22CliTests(unittest.TestCase):
         self.make_identity(home)
         root = self.make_root(home)
         msg = self.seal_core22(home, root)
-        self.assertIn(b'"root_hint"', msg.read_bytes())
+        raw = msg.read_bytes()
+        self.assertNotIn(b'"root_hint"', raw)
+        self.assertIn(b'"f"', raw)
 
     def test_metadata_receiver_id_checked(self) -> None:
         home = self.root / "home-receiver-a"
@@ -410,7 +414,8 @@ class Core22CliTests(unittest.TestCase):
         root = self.make_root(home)
         msg = self.seal_core22(home, root)
         raw = msg.read_bytes()
-        self.assertIn(b"encrypted_metadata", raw)
+        self.assertNotIn(b"encrypted_metadata", raw)
+        self.assertIn(b'"e"', raw)
         self.assertNotIn(b"root_fingerprint", raw)
 
     def test_low_signature_no_plain_veil_strings(self) -> None:

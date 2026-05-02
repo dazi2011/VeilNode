@@ -25,6 +25,9 @@ enum AppTab: String, CaseIterable, Identifiable {
   case dashboard
   case seal
   case open
+  case roots
+  case carrier
+  case strategy
   case contacts
   case settings
 
@@ -35,6 +38,9 @@ enum AppTab: String, CaseIterable, Identifiable {
     case .dashboard: "Dashboard"
     case .seal: "Seal"
     case .open: "Open"
+    case .roots: "Roots"
+    case .carrier: "Carrier"
+    case .strategy: "Strategy"
     case .contacts: "Contacts"
     case .settings: "Settings"
     }
@@ -45,6 +51,9 @@ enum AppTab: String, CaseIterable, Identifiable {
     case .dashboard: "checklist"
     case .seal: "lock.doc"
     case .open: "lock.open"
+    case .roots: "key"
+    case .carrier: "doc.viewfinder"
+    case .strategy: "chart.line.uptrend.xyaxis"
     case .contacts: "person.2"
     case .settings: "gearshape"
     }
@@ -79,6 +88,12 @@ struct AppView: View {
       SealView()
     case .open:
       OpenView()
+    case .roots:
+      RootsView()
+    case .carrier:
+      CarrierView()
+    case .strategy:
+      StrategyView()
     case .contacts:
       ContactsView()
     case .settings:
