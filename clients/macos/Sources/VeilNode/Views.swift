@@ -181,22 +181,26 @@ struct StrategyView: View {
 
   var body: some View {
     Form {
-      FileSelectionRow(title: "Carrier", systemImage: "doc.richtext", value: carrier?.path ?? "Choose carrier") { carrier = FileDialogs.pickFile() }
-      FileSelectionRow(title: "Payload", systemImage: "doc.badge.plus", value: payload?.path ?? "Choose payload") { payload = FileDialogs.pickFile() }
-      FileSelectionRow(title: "Before", systemImage: "doc", value: before?.path ?? "Choose before") { before = FileDialogs.pickFile() }
-      FileSelectionRow(title: "After", systemImage: "doc.fill", value: after?.path ?? "Choose after") { after = FileDialogs.pickFile() }
-      FileSelectionRow(title: "Policy", systemImage: "slider.horizontal.3", value: policy?.path ?? "Choose selected.policy.json") { policy = FileDialogs.pickFile(allowedExtensions: ["json"]) }
-      FileSelectionRow(title: "Model", systemImage: "brain", value: model?.path ?? "Choose model.json") { model = FileDialogs.pickFile(allowedExtensions: ["json"]) }
-      TextField("Candidates", text: $count)
-      HStack {
-        Button { Task { await log.run(["strategy", "features", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--json"]) } } label: { Label("Features", systemImage: "list.bullet.rectangle") }
-        Button { Task { await log.run(["strategy", "generate", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Generate", systemImage: "shuffle") }
-        Button { Task { await log.run(["strategy", "select", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Select", systemImage: "checkmark.circle") }
+      Section("Plan (carrier + payload)") {
+        FileSelectionRow(title: "Carrier", systemImage: "doc.richtext", value: carrier?.path ?? "Choose carrier") { carrier = FileDialogs.pickFile() }
+        FileSelectionRow(title: "Payload", systemImage: "doc.badge.plus", value: payload?.path ?? "Choose payload") { payload = FileDialogs.pickFile() }
+        TextField("Candidates", text: $count)
+        HStack {
+          Button { Task { await log.run(["strategy", "features", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--json"]) } } label: { Label("Features", systemImage: "list.bullet.rectangle") }
+          Button { Task { await log.run(["strategy", "generate", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Generate", systemImage: "shuffle") }
+          Button { Task { await log.run(["strategy", "select", "--carrier", carrier?.path ?? "", "--payload", payload?.path ?? "", "--count", count, "--json"]) } } label: { Label("Select", systemImage: "checkmark.circle") }
+        }
       }
-      HStack {
-        Button { Task { await log.run(["strategy", "score", "--before", before?.path ?? "", "--after", after?.path ?? "", "--policy", policy?.path ?? "", "--json"]) } } label: { Label("Score", systemImage: "gauge.medium") }
-        Button { Task { await log.run(["strategy", "scan-signature", "--input", after?.path ?? "", "--json"]) } } label: { Label("Scan", systemImage: "magnifyingglass") }
-        Button { Task { await log.run(["strategy", "model", "inspect", "--in", model?.path ?? ""]) } } label: { Label("Model", systemImage: "brain") }
+      Section("Score (before + after + policy)") {
+        FileSelectionRow(title: "Before", systemImage: "doc", value: before?.path ?? "Choose original cover") { before = FileDialogs.pickFile() }
+        FileSelectionRow(title: "After", systemImage: "doc.fill", value: after?.path ?? "Choose sealed output") { after = FileDialogs.pickFile() }
+        FileSelectionRow(title: "Policy", systemImage: "slider.horizontal.3", value: policy?.path ?? "Choose selected.policy.json") { policy = FileDialogs.pickFile(allowedExtensions: ["json"]) }
+        FileSelectionRow(title: "Model", systemImage: "brain", value: model?.path ?? "Choose model.json (optional)") { model = FileDialogs.pickFile(allowedExtensions: ["json"]) }
+        HStack {
+          Button { Task { await log.run(["strategy", "score", "--before", before?.path ?? "", "--after", after?.path ?? "", "--policy", policy?.path ?? "", "--json"]) } } label: { Label("Score", systemImage: "gauge.medium") }
+          Button { Task { await log.run(["strategy", "scan-signature", "--input", after?.path ?? "", "--json"]) } } label: { Label("Scan", systemImage: "magnifyingglass") }
+          Button { Task { await log.run(["strategy", "model", "inspect", "--in", model?.path ?? ""]) } } label: { Label("Model", systemImage: "brain") }
+        }
       }
       ConsoleView(text: log.output, isRunning: log.isRunning)
     }
@@ -388,16 +392,39 @@ enum FileDialogs {
 struct SettingsView: View {
   @Environment(CommandLog.self) private var log
 
+  private var suiteVersion: String {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.2"
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("Core")
-        .font(.headline)
-      Text("All cryptographic operations are delegated to the shared veil-core package.")
-        .foregroundStyle(.secondary)
-      Text("Root lifecycle, Shamir backup, replay seen database, carrier audit/compare/profile, migration, and debug-only switches are available through the shared CLI.")
-        .foregroundStyle(.secondary)
-      ActionButton(title: "Show Profiles", systemImage: "slider.horizontal.3") {
-        await log.run(["profile", "levels"])
+    Form {
+      Section("Suite") {
+        LabeledContent("Suite version") { Text(suiteVersion).monospaced() }
+        LabeledContent("Crypto core") { Text("crypto_core_version = 2.2").monospaced() }
+        Text("The crypto core marker is a message compatibility tag — it is not the suite package version.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      Section("Core boundary") {
+        Text("All cryptographic operations are delegated to the shared veil-core package. Adaptive policy chooses envelope shape only — never cryptography.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+      }
+      Section("Diagnostics") {
+        HStack {
+          ActionButton(title: "Show Profiles", systemImage: "slider.horizontal.3") {
+            await log.run(["profile", "levels"])
+          }
+          ActionButton(title: "Run Doctor", systemImage: "stethoscope") {
+            log.showDoctorStatus()
+          }
+        }
+      }
+      Section("Links") {
+        Link("Project repository", destination: URL(string: "https://github.com/dazi2011/VeilNode")!)
+        Link("Latest release", destination: URL(string: "https://github.com/dazi2011/VeilNode/releases/latest")!)
+        Link("Technical notes", destination: URL(string: "https://github.com/dazi2011/VeilNode/blob/main/docs/TECHNICAL.md")!)
+        Link("Platform matrix", destination: URL(string: "https://github.com/dazi2011/VeilNode/blob/main/docs/PLATFORMS.md")!)
       }
       ConsoleView(text: log.output, isRunning: log.isRunning)
     }

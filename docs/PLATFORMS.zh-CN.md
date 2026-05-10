@@ -1,29 +1,85 @@
 # VeilNode 平台客户端
 
-平台规则：GUI 和系统集成可以因平台而异，但加密、文件格式、协议兼容和容器适配必须调用同一个 `veil-core`。
+分工原则非常简单：**`veil-core` 负责密码学、消息格式与兼容性**；
+**平台客户端只负责 UI 与系统集成**。任何客户端都不重写加密。
 
 ## 客户端矩阵
 
-| 平台 | 路径 | 当前实现 | 验证方式 |
+| 平台 | 路径 | 状态 | 验证 |
 | --- | --- | --- | --- |
-| macOS | `clients/macos/` | 原生 SwiftUI 桌面 App | `swift build --product VeilNode` 与 GUI 验证 |
-| Windows | `clients/windows/VeilNodeGui.pyw` | Tk 桌面 GUI 包 | Python 编译检查 |
-| iOS/iPadOS | `clients/ios/` | SwiftUI App + XcodeGen/Xcode 工程 | 模拟器/target 构建；有签名链时导出 IPA |
-| Android | `clients/android/` | 原生 Android Gradle 工程 | debug-signed APK 构建 |
-| Linux | CLI only | GUI 发行支持已移除 | `veil-node --help` |
-| NAS | CLI only | GUI/web 网关发行支持已移除 | `veil-node doctor` |
+| macOS | `clients/macos/` | 原生 SwiftUI 桌面 App，内嵌 `veil-core`。 | `swift build --product VeilNode` |
+| Windows | `clients/windows/VeilNodeGui.pyw` | Tk 桌面 GUI，调用共享 CLI。 | `python -m py_compile clients/windows/VeilNodeGui.pyw` |
+| iOS / iPadOS | `clients/ios/` | SwiftUI **伴侣 App**：导入、SHA-256、CLI 命令复制。 | `xcodegen generate && xcodebuild` |
+| Android | `clients/android/` | Java **伴侣 App**：导入、SHA-256、CLI 命令复制。 | `gradle :app:assembleDebug` |
+| Linux | — | 仅 CLI（GUI 发行已下线）。 | `veil-node --help` |
+| NAS | — | 仅 CLI（GUI / web 网关已下线）。 | `veil-node doctor` |
 
 ## macOS
 
-包含 SwiftPM SwiftUI App、TabView + NavigationStack、doctor/test-vector 状态按钮、seal/open/root/carrier/strategy/contact 表单、共享核心命令桥接，以及 `script/build_and_run.sh`。seal/open 的文件和目录通过按钮弹窗选择，不需要手动输入路径；支持批量加密/解密，并支持 v1/v2 读取兼容、crypto core v2.2、adaptive policy、low-signature 与 fixed-signature scan。发行包内嵌共享 `veil-core` 与文档。平台适配模型覆盖 Keychain、Secure Enclave、Touch ID、Finder 工作流和拖拽入口。
+- SwiftPM + SwiftUI 桌面外壳。
+- 八个 Tab：Dashboard · Seal · Open · Roots · Carrier · Strategy · Contacts · Settings。
+- 所有文件输入都用 `NSOpenPanel`；用户不需要手动输入路径。
+- Seal / Open 支持批量。
+- v1 外部 keypart 与 v2 root keypart 模式并存。
+- crypto core 2.2 全覆盖：自适应策略选择、固定签名扫描、低固定特征档位、
+  root 生命周期、root 存储、carrier audit / compare / profile，
+  Strategy 标签按"规划 + 评分"两段排版。
+- Settings 标签显示套件版本、加密内核标记，并直接链接 GitHub 仓库 /
+  最新 release / 技术与平台文档。
+- 发行 bundle（`VeilNode.app`，位于 DMG 内）把共享的 `veil-core` Python
+  包以及文档放在 `Contents/Resources/VeilNodeCore`。
+- `script/build_and_run.sh` 支持 `run` / `--debug` / `--logs` /
+  `--telemetry` / `--verify` / `--package`。
 
 ## Windows
 
-包含 `clients/windows/VeilNodeGui.pyw`、`VeilNodeGui.bat` 启动器和 `BuildExe.bat` Windows 本地一键 PyInstaller 辅助脚本，调用共享 `veil-core`。界面提供按钮式文件/目录选择、批量 seal/open 队列、adaptive policy、fixed-signature scan、root 生命周期、root store、Shamir、carrier audit/profile 与高级 CLI 面板，并与 macOS 的 v1/v2/v2.2 流程对齐。平台适配模型覆盖 Credential Manager / DPAPI、TPM、Windows Hello、资源管理器工作流和 MSI/MSIX 打包。
+- `clients/windows/VeilNodeGui.pyw`：Tk GUI，调用共享 `veil-core`。
+- 发行 ZIP 内附 `VeilNodeGui.bat` 启动器。
+- `BuildExe.bat`：一键 PyInstaller，把同一份源码生成
+  `dist/windows-exe/veil-node.exe`。
+- 便携 ZIP 同时打包了**所有平台**的 `Build*` helper 和**完整源树**：
+  Windows 主机可以在 ZIP 内直接 `BuildApk.bat` 构建 Android APK，无需
+  重新克隆仓库。
+- Tk GUI 与 macOS 表面一致：按钮选择、批量 seal / open、v1/v2 模式、
+  自适应策略、固定签名扫描、低固定特征档、root 生命周期、root 存储、
+  carrier audit / compare / profile，并提供完整的 advanced CLI 标签。
+
+## iOS / iPadOS
+
+iOS / iPadOS 是**故意做窄**的伴侣 App。
+
+- 原生 SwiftUI，四个 Tab：Overview · Inspect · Commands · About。
+- **Overview** 解释伴侣 App 的边界与加密内核固定面。
+- **Inspect** 用系统标准 `fileImporter`（Files / iCloud Drive /
+  share-sheet）选文件，使用 `CryptoKit` 计算 SHA-256，方便核对桌面输出。
+  **不在设备上做解密**。
+- **Commands** 内置 5 个常用命令卡片：doctor / identity create /
+  root create / 自适应 seal / open。每张卡都有 Copy command 按钮。
+- **About** 显示套件版本、加密内核标记，并提供 GitHub 仓库、最新
+  release、技术文档、平台文档的直链。
+- 适配 Files / share-sheet、Keychain、Secure Enclave、Face ID / Touch ID
+  的边界都有文档说明；**在设备上 seal / open 不在范围内**。
+- 签名 IPA 必须有真实的 Apple Developer 账号和 provisioning profile。
+  `BuildIpa.sh` 拒绝伪造未签名 IPA。
+
+## Android
+
+Android 与 iOS 同形 —— 故意做窄的伴侣 App。
+
+- 原生 Java，单 Activity，四个 Tab：Overview · Inspect · Commands · About。
+- **Inspect** 用 `Intent.ACTION_OPEN_DOCUMENT`（Storage Access Framework）
+  选文件，用 `MessageDigest` 计算 SHA-256。
+- **Commands** 与 iOS 同形，每张卡都有 Copy 按钮。
+- **About** 链向仓库与 release。
+- 适配 Storage Access Framework、Android Keystore / StrongBox、
+  biometric、share 流的边界都有文档说明；**在设备上 seal / open 不在
+  范围内**。
+- 当 JDK 17+ / Gradle / Android SDK 齐全时，发行打包器会输出 debug-signed
+  APK；上架商店要使用真实的 release 签名。
 
 ## Linux
 
-Linux GUI 不再作为发行目标。Linux 系统请使用共享 CLI：
+Linux GUI 已不再是发行目标，使用共享 CLI 即可：
 
 ```bash
 veil-node --help
@@ -32,24 +88,25 @@ veil-node seal ...
 veil-node open ...
 ```
 
-## iOS / iPadOS
-
-提供 SwiftUI 移动客户端源码包，包含 inbox、seal、strategy、roots、carrier、contacts、settings 移动端入口，围绕固定 App + `.vpkg` 导入模型设计，并对齐文件 App、分享菜单、Keychain、Secure Enclave、Face ID / Touch ID 与小文件工作流。`clients/ios/project.yml` 与 `VeilNodeiOS.xcodeproj` 定义真实 App target；最终 IPA 需要有效 Apple Developer Team 账号和 provisioning profile，不生成未签名占位 IPA。
-
-## Android
-
-提供最小依赖的原生 Android Gradle App，包含 inbox、seal、strategy、roots、carrier、contacts、settings 移动端入口，围绕固定 App + `.vpkg` 导入模型设计，并对齐 Storage Access Framework、Android Keystore、StrongBox、生物识别解锁和分享菜单。Android SDK、Gradle 与可用 JDK 齐备时，release packager 会产出真实 debug-signed APK；生产/商店签名必须使用真实 release key。
-
 ## NAS
 
-NAS GUI/web 网关不再作为发行目标。NAS 系统请使用 CLI 自动化，并把 root、密码、carrier 分开保存。
+NAS GUI / web 网关已从发行目标中移除。NAS 使用 CLI 自动化即可，并把
+root 材料、密码、载体放在**互相分离**的存储位置。
 
-## 发行打包
+## Release 打包
 
 ```bash
 veil-node package --release --out dist/release
 ```
 
-release manifest 会报告已构建和被阻塞的产物。macOS DMG 需要 macOS 上的 SwiftPM 与 `hdiutil`。Windows ZIP 会打包 GUI launcher、Python zipapp 和 `BuildExe.bat`；原生 `.exe` 需要 Windows/PyInstaller 构建主机。Android APK 从 `clients/android` 构建；IPA 需要真实 Apple Developer 账号与 provisioning profile，缺失时会报告 blocked，不会伪造产物。
+manifest 会标明每个产物是 built 还是 blocked。macOS DMG 在 macOS 上当
+SwiftPM 与 `hdiutil` 可用时构建；Windows ZIP 是跨平台便携包（GUI +
+zipapp + 所有 `Build*` helper + 源树）；Android APK 在 SDK / Gradle / JDK
+都齐时构建；IPA 需要真实的 Apple Developer 账号和 provisioning profile，
+缺失时打成 `blocked` —— **绝不伪造 IPA**。
 
-所有客户端不得重写加密逻辑，必须调用共享 CLI/core，并覆盖 v1/v2 读取兼容和 crypto core v2.2：身份/联系人、root 生命周期、root store、Shamir、seal/open、adaptive strategy features/generate/select/score/scan、防重放、decoy、carrier audit/compare/profile、repair、migrate、doctor、test-vector。
+GUI 客户端只调用共享 CLI / core，覆盖 v1/v2 读取兼容与 crypto core 2.2
+全流程：identity / contact、root 生命周期、root 存储、Shamir 拆分/恢复、
+seal / open、自适应 strategy（features / generate / select / score / scan）、
+replay 控制、decoy、carrier audit / compare / profile、repair、migrate、
+doctor、test-vector。移动伴侣 App 按设计停在"导入、哈希、复制命令"。

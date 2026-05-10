@@ -50,28 +50,56 @@ def build_release_artifacts(out_dir: str | Path) -> dict:
 
 def _build_windows_zip(root: Path, dist: Path, zipapp_path: Path) -> dict:
     target = dist / "VeilNode-Windows.zip"
+    skip_dir_parts = {"__pycache__", ".gradle", "build", ".build"}
+    skip_suffixes = {".pyc"}
+    written: set[str] = set()
+
+    def add(source: Path, archive_name: str) -> None:
+        if archive_name in written or not source.exists():
+            return
+        written.add(archive_name)
+        zf.write(source, archive_name)
+
+    def add_tree(source_root: Path, archive_prefix: str) -> None:
+        if not source_root.exists():
+            return
+        for entry in sorted(source_root.rglob("*")):
+            if not entry.is_file():
+                continue
+            rel = entry.relative_to(source_root)
+            if any(part in skip_dir_parts for part in rel.parts):
+                continue
+            if entry.suffix in skip_suffixes:
+                continue
+            add(entry, f"{archive_prefix}/{rel.as_posix()}")
+
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(zipapp_path, "veil-node.pyz")
-        for path in [
-            root / "clients/windows/VeilNodeGui.pyw",
-            root / "clients/windows/VeilNodeGui.bat",
-            root / "clients/windows/BuildExe.bat",
+        add(zipapp_path, "VeilNode/veil-node.pyz")
+        add(root / "bin/veil-node", "VeilNode/bin/veil-node")
+        add(root / "bin/veil-factory", "VeilNode/bin/veil-factory")
+        add_tree(root / "veil_core", "VeilNode/veil_core")
+        add_tree(root / "clients/windows", "VeilNode/clients/windows")
+        add_tree(root / "clients/android", "VeilNode/clients/android")
+        add_tree(root / "clients/ios", "VeilNode/clients/ios")
+        add_tree(root / "clients/macos", "VeilNode/clients/macos")
+        add_tree(root / "clients/common", "VeilNode/clients/common")
+        for doc in [
+            root / "README.md",
+            root / "README.zh-CN.md",
+            root / "docs/TECHNICAL.md",
+            root / "docs/TECHNICAL.zh-CN.md",
+            root / "docs/PLATFORMS.md",
+            root / "docs/PLATFORMS.zh-CN.md",
+            root / "pyproject.toml",
+            root / "Package.swift",
         ]:
-            if path.exists():
-                zf.write(path, f"VeilNode/{path.name}")
-        client_readme = root / "clients/windows/README.md"
-        if client_readme.exists():
-            zf.write(client_readme, "VeilNode/clients/windows/README.md")
-        for package_file in (root / "veil_core").rglob("*.py"):
-            zf.write(package_file, f"VeilNode/veil_core/{package_file.relative_to(root / 'veil_core')}")
-        for doc in [root / "README.md", root / "README.zh-CN.md", root / "docs/TECHNICAL.md", root / "docs/PLATFORMS.md"]:
             if doc.exists():
-                zf.write(doc, f"VeilNode/{doc.relative_to(root)}")
+                add(doc, f"VeilNode/{doc.relative_to(root).as_posix()}")
     return {
         "package": str(target),
         "type": "zip",
         "status": "built",
-        "note": "Portable Windows ZIP includes the GUI launcher and Python zipapp; native .exe requires a Windows/PyInstaller build host.",
+        "note": "Portable cross-platform bundle. Windows: VeilNodeGui.bat / BuildExe.bat. Android: BuildApk.bat / BuildApk.sh. iOS: BuildIpa.sh.",
     }
 
 
@@ -99,10 +127,36 @@ def _build_macos_dmg(root: Path, dist: Path) -> dict:
         macos.mkdir(parents=True)
         resources.mkdir(parents=True)
         shutil.copy2(executable, macos / "VeilNode")
-        shutil.copytree(root / "veil_core", resources / "veil_core")
+        shutil.copytree(
+            root / "veil_core",
+            resources / "veil_core",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
         for doc in [root / "README.md", root / "README.zh-CN.md"]:
             shutil.copy2(doc, resources / doc.name)
         shutil.copytree(root / "docs", resources / "docs")
+        helpers = staging / "BuildHelpers"
+        helpers.mkdir(parents=True)
+        for helper in [
+            root / "clients/android/BuildApk.sh",
+            root / "clients/android/BuildApk.bat",
+            root / "clients/ios/BuildIpa.sh",
+            root / "clients/windows/BuildExe.bat",
+        ]:
+            if helper.exists():
+                shutil.copy2(helper, helpers / helper.name)
+        (helpers / "README.md").write_text(
+            "VeilNode build helpers\n"
+            "======================\n\n"
+            "Run on the host that matches the target:\n\n"
+            "- BuildApk.sh   -> macOS or Linux host with JDK 17+, Gradle, Android SDK\n"
+            "- BuildApk.bat  -> Windows host with JDK 17+, Gradle, Android SDK\n"
+            "- BuildIpa.sh   -> macOS host with Xcode, xcodegen, Apple Developer team\n"
+            "- BuildExe.bat  -> Windows host with Python and PyInstaller\n\n"
+            "All scripts work against this same source tree, so unzip the source\n"
+            "(or clone the repo) and call them in place.\n",
+            encoding="utf-8",
+        )
         (app / "Contents/Info.plist").write_text(
             """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -111,8 +165,11 @@ def _build_macos_dmg(root: Path, dist: Path) -> dict:
 <key>CFBundleIdentifier</key><string>org.veilnode.suite</string>
 <key>CFBundleName</key><string>VeilNode</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.1</string>
+<key>CFBundleShortVersionString</key><string>0.3.2</string>
+<key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 """,
             encoding="utf-8",

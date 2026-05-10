@@ -382,7 +382,7 @@ class Core22CliTests(unittest.TestCase):
 
     def test_core22_metadata_does_not_modify_suite_version(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.3.1"', pyproject)
+        self.assertIn('version = "0.3.2"', pyproject)
 
     def test_metadata_contains_root_epoch(self) -> None:
         home = self.root / "home-epoch-meta"

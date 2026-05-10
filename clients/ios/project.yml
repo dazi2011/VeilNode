@@ -29,7 +29,7 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: VeilNode
-        CFBundleShortVersionString: "0.3.1"
+        CFBundleShortVersionString: "0.3.2"
         CFBundleVersion: "1"
         UILaunchScreen: {}
 schemes:

@@ -1,49 +1,93 @@
 # VeilNode Platform Clients
 
-The rule is simple: platform clients own UI and OS integration; `veil-core` owns crypto, message formats and compatibility.
+The split is simple: **`veil-core` owns crypto, message format and
+compatibility**; **platform clients own UI and OS integration**. No client
+re-implements crypto.
 
-## Client Matrix
+## Client matrix
 
-| Platform | Client path | Status | Verification |
+| Platform | Path | Status | Verification |
 | --- | --- | --- | --- |
-| macOS | `clients/macos/` | Native SwiftUI desktop app | `swift build --product VeilNode` |
-| Windows | `clients/windows/VeilNodeGui.pyw` | Tk desktop GUI package | Python compile check |
-| iOS/iPadOS | `clients/ios/` | SwiftUI app with XcodeGen/Xcode project | simulator/target build; signed IPA when provisioning exists |
-| Android | `clients/android/` | Native Android Gradle project | debug-signed APK build |
-| Linux | CLI only | GUI release support removed | `veil-node --help` |
-| NAS | CLI only | GUI/web gateway release support removed | `veil-node doctor` |
+| macOS | `clients/macos/` | Native SwiftUI desktop app embedding `veil-core`. | `swift build --product VeilNode` |
+| Windows | `clients/windows/VeilNodeGui.pyw` | Tk desktop GUI calling shared CLI. | `python -m py_compile clients/windows/VeilNodeGui.pyw` |
+| iOS / iPadOS | `clients/ios/` | SwiftUI **companion app** (import, SHA-256, CLI commands). | `xcodegen generate && xcodebuild` |
+| Android | `clients/android/` | Native Java **companion app** (import, SHA-256, CLI commands). | `gradle :app:assembleDebug` |
+| Linux | — | CLI only. GUI release support removed. | `veil-node --help` |
+| NAS | — | CLI only. GUI / web gateway release support removed. | `veil-node doctor` |
 
 ## macOS
 
-Included:
-
-- SwiftPM SwiftUI app shell.
-- TabView + NavigationStack layout.
-- Doctor/test-vector buttons.
-- Dashboard status, doctor and test-vector surfaces.
-- Seal/open/root/carrier/strategy/contact form surfaces.
-- Button-based file/folder pickers; users do not type file paths in the seal/open flows.
-- Batch seal/open for multiple selected files/messages.
-- v1 external keypart and v2 root keypart modes.
-- Crypto core v2.2 seal/open, adaptive policy selection, fixed-signature scan, low-signature profiles, root lifecycle, root store and carrier tools via shared CLI surfaces.
-- Shared-core command bridge.
-- `script/build_and_run.sh` with `run`, `--debug`, `--logs`, `--telemetry`, `--verify`.
-- Release bundle embeds the shared `veil-core` package and documentation.
-- Platform adapter model covers Keychain, Secure Enclave, Touch ID and Finder workflow integration.
+- SwiftPM + SwiftUI desktop shell.
+- `TabView` + `NavigationStack` layout with eight tabs:
+  Dashboard · Seal · Open · Roots · Carrier · Strategy · Contacts · Settings.
+- All file inputs use button-driven `NSOpenPanel`; users do not type paths.
+- Batch seal / open across multiple files or messages.
+- v1 external keypart and v2 root keypart modes side by side.
+- Crypto core 2.2 surfaces: adaptive policy selection, fixed-signature scan,
+  low-signature profile picker, root lifecycle, root store, carrier audit /
+  compare / profile, strategy plan & score sections.
+- Settings tab shows suite version, crypto core marker and direct links to
+  the repo / latest release / docs.
+- Release bundle (`VeilNode.app` inside the DMG) embeds the shared
+  `veil-core` Python package and documentation under
+  `Contents/Resources/VeilNodeCore`.
+- `script/build_and_run.sh` supports `run`, `--debug`, `--logs`,
+  `--telemetry`, `--verify`, `--package`.
 
 ## Windows
 
-Included:
+- GUI wrapper `clients/windows/VeilNodeGui.pyw` uses Tk and calls the shared
+  `veil-core` package.
+- `VeilNodeGui.bat` is the launcher inside the release ZIP.
+- `BuildExe.bat` is a one-click PyInstaller helper that produces
+  `dist/windows-exe/veil-node.exe` from the same source tree.
+- The portable ZIP also contains every other `Build*` helper plus the full
+  source tree, so a Windows host can build the Android APK
+  (`BuildApk.bat`) without re-cloning.
+- Tk GUI mirrors macOS surfaces: button-based pickers, batch seal / open,
+  v1 / v2 modes, adaptive policy, fixed-signature scan, low-signature
+  profile, root lifecycle, root store, carrier audit / compare / profile,
+  full advanced CLI tab.
 
-- GUI wrapper in `clients/windows/VeilNodeGui.pyw`.
-- `VeilNodeGui.bat` launcher for release ZIP users.
-- `BuildExe.bat` one-click local PyInstaller helper for building `veil-node.exe` on Windows.
-- Calls shared `veil-core`.
-- Button-based file/folder pickers.
-- Batch seal/open command queue.
-- v1 external keypart and v2 root keypart modes aligned with the macOS UI.
-- Crypto core v2.2 seal/open, adaptive policy selection, fixed-signature scan, low-signature profiles, root lifecycle, root store and carrier audit/profile surfaces.
-- Platform adapter model covers Credential Manager / DPAPI, TPM, Windows Hello, Explorer workflow integration and installer packaging.
+## iOS / iPadOS
+
+iOS / iPadOS is a deliberately narrow **companion app**.
+
+- Native SwiftUI tabs:
+  Overview · Inspect · Commands · About.
+- **Overview** — explains the companion-app boundary and the crypto-core
+  fixed surface.
+- **Inspect** — picks a file via the standard `fileImporter` (Files /
+  iCloud Drive / share-sheet), reports name, size and SHA-256 using
+  `CryptoKit` so you can confirm a carrier or `.vmsg` matches what the
+  desktop produced. It does not decrypt.
+- **Commands** — pre-canned, copy-to-clipboard CLI snippets covering
+  doctor, identity create, root create, adaptive seal and open. Each card
+  has a "Copy command" button.
+- **About** — suite version, crypto core marker, and direct links to repo,
+  latest release, technical notes, and platform matrix.
+- Adapter surfaces for Files / share-sheet, Keychain, Secure Enclave and
+  Face ID / Touch ID are documented at the boundary; on-device sealing or
+  opening is **out of scope** by design.
+- Signed IPA creation requires a valid Apple Developer account and
+  provisioning profile. `BuildIpa.sh` refuses to fabricate an unsigned IPA.
+
+## Android
+
+Android is the same shape as iOS — a deliberately narrow **companion app**.
+
+- Native Java single-Activity UI with four tabs:
+  Overview · Inspect · Commands · About.
+- **Inspect** uses `Intent.ACTION_OPEN_DOCUMENT` (Storage Access Framework)
+  to pick a file and computes SHA-256 via `MessageDigest`.
+- **Commands** mirrors the iOS card layout with a Copy button per command.
+- **About** links to the repo and the latest release.
+- Adapter surfaces for Storage Access Framework, Android Keystore /
+  StrongBox, biometric unlock and share workflows are documented at the
+  boundary; on-device sealing or opening is **out of scope** by design.
+- The release packager emits a real debug-signed APK when JDK 17+, Gradle,
+  and the Android SDK are available; production store signing must use a
+  real release key.
 
 ## Linux
 
@@ -56,38 +100,31 @@ veil-node seal ...
 veil-node open ...
 ```
 
-## iOS / iPadOS
-
-Included:
-
-- SwiftUI mobile client source package in `clients/ios/`.
-- XcodeGen project spec and generated `VeilNodeiOS.xcodeproj`.
-- Tab-based inbox, seal, strategy, roots, carrier, contacts and settings surfaces.
-- Fixed app + `.vpkg` import model.
-- Files app / Share Sheet, Keychain, Secure Enclave and Face ID / Touch ID adapter surfaces.
-- UI coverage tracks crypto core v2.2 and adaptive policy workflows.
-- Signed IPA creation requires a valid Apple Developer account and provisioning profile; VeilNode does not ship unsigned placeholder IPA files.
-
-## Android
-
-Included:
-
-- Minimal native Android Gradle app in `clients/android/`.
-- Inbox, seal, strategy, roots, carrier, contacts and settings surfaces.
-- Fixed app + `.vpkg` import model.
-- Storage Access Framework, Android Keystore, StrongBox, biometric unlock and share workflow adapter surfaces.
-- UI coverage tracks crypto core v2.2 and adaptive policy workflows. The packager emits a real debug-signed APK when Android SDK, Gradle and a working JDK are available; production store signing must use a real release key.
-
 ## NAS
 
-NAS GUI/web gateway support is removed from release targets. Use CLI automation on NAS systems and keep root material, passwords and carriers in separate storage locations.
+NAS GUI / web gateway support is removed. Use CLI automation on NAS systems
+and keep root material, passwords and carriers in **separate** storage
+locations.
 
-## Release Packaging
+## Release packaging
 
 ```bash
 veil-node package --release --out dist/release
 ```
 
-The release manifest reports built and blocked artifacts. macOS DMG builds on macOS when SwiftPM and `hdiutil` are present. Windows ZIP is produced as a portable GUI + zipapp bundle and includes `BuildExe.bat` for Windows-hosted `.exe` creation. Android APK builds from `clients/android` when the Android SDK/Gradle/JDK chain is available. IPA export requires a real Apple Developer account and provisioning profile and is reported as blocked if those are absent; VeilNode does not fabricate mobile binaries.
+The release manifest reports built and blocked artifacts. macOS DMG builds
+on macOS when SwiftPM and `hdiutil` are present. The Windows ZIP is a
+portable cross-platform bundle: GUI + Python zipapp + every `Build*`
+helper + the source tree, so any host can build its target binary in
+place. Android APK builds when the SDK + Gradle + JDK chain is available.
+IPA export requires a real Apple Developer account and provisioning profile
+and is reported as `blocked` if those are absent — VeilNode does not
+fabricate mobile binaries.
 
-No client should reimplement crypto. GUI clients call the shared CLI/core and must expose v1/v2 reader compatibility plus crypto core v2.2 flows: identity/contact management, root lifecycle, root store, Shamir split/recover, seal/open, adaptive strategy features/generate/select/score/scan, replay controls, decoy, carrier audit/compare/profile, repair, migrate, doctor and test-vector.
+No client re-implements crypto. GUI clients call the shared CLI / core and
+expose v1 / v2 reader compatibility plus crypto core 2.2 flows: identity /
+contact management, root lifecycle, root store, Shamir split / recover,
+seal / open, adaptive strategy features / generate / select / score / scan,
+replay controls, decoy, carrier audit / compare / profile, repair, migrate,
+doctor and test-vector. Mobile companion apps deliberately stop at "import,
+hash, copy command".

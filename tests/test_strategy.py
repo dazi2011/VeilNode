@@ -356,7 +356,7 @@ class StrategyTests(unittest.TestCase):
 
     def test_crypto_core_version_not_suite_version(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.3.1"', pyproject)
+        self.assertIn('version = "0.3.2"', pyproject)
         self.assertNotIn('version = "2.2"', pyproject)
 
     def test_adaptive_policy_does_not_modify_suite_version(self) -> None:
