@@ -36,6 +36,8 @@ def build_release_artifacts(out_dir: str | Path) -> dict:
     artifacts["macos_dmg"] = _build_macos_dmg(root, dist)
     artifacts["android_apk"] = _build_android_apk(root, dist)
     artifacts["ios_ipa"] = _build_ios_ipa(root, dist)
+    if os.environ.get("VEILNODE_BUILD_UNSIGNED_IPA") == "1":
+        artifacts["ios_ipa_unsigned"] = _build_ios_ipa_unsigned(root, dist)
     manifest = {
         "release_dir": str(dist),
         "suite_version_source": "pyproject.toml",
@@ -141,6 +143,7 @@ def _build_macos_dmg(root: Path, dist: Path) -> dict:
             root / "clients/android/BuildApk.sh",
             root / "clients/android/BuildApk.bat",
             root / "clients/ios/BuildIpa.sh",
+            root / "clients/ios/BuildIpaUnsigned.sh",
             root / "clients/windows/BuildExe.bat",
         ]:
             if helper.exists():
@@ -149,10 +152,11 @@ def _build_macos_dmg(root: Path, dist: Path) -> dict:
             "VeilNode build helpers\n"
             "======================\n\n"
             "Run on the host that matches the target:\n\n"
-            "- BuildApk.sh   -> macOS or Linux host with JDK 17+, Gradle, Android SDK\n"
-            "- BuildApk.bat  -> Windows host with JDK 17+, Gradle, Android SDK\n"
-            "- BuildIpa.sh   -> macOS host with Xcode, xcodegen, Apple Developer team\n"
-            "- BuildExe.bat  -> Windows host with Python and PyInstaller\n\n"
+            "- BuildApk.sh         -> macOS or Linux host with JDK 17+, Gradle, Android SDK\n"
+            "- BuildApk.bat        -> Windows host with JDK 17+, Gradle, Android SDK\n"
+            "- BuildIpa.sh         -> macOS host with Xcode, xcodegen, Apple Developer team\n"
+            "- BuildIpaUnsigned.sh -> macOS host with Xcode, xcodegen (unsigned IPA, sideload only)\n"
+            "- BuildExe.bat        -> Windows host with Python and PyInstaller\n\n"
             "All scripts work against this same source tree, so unzip the source\n"
             "(or clone the repo) and call them in place.\n",
             encoding="utf-8",
@@ -293,6 +297,77 @@ def _build_ios_ipa(root: Path, dist: Path) -> dict:
         "status": "built",
         "signing": "apple_development",
         "team": team,
+    }
+
+
+def _build_ios_ipa_unsigned(root: Path, dist: Path) -> dict:
+    project_dir = root / "clients/ios"
+    project_file = project_dir / "VeilNodeiOS.xcodeproj"
+    if not project_file.exists():
+        xcodegen = shutil.which("xcodegen")
+        if not xcodegen or not (project_dir / "project.yml").exists():
+            return _mobile_blocked(root, "ios", "Xcode iOS project/workspace is not present")
+        generated = subprocess.run([xcodegen, "generate"], cwd=project_dir, text=True, capture_output=True)
+        if generated.returncode != 0:
+            return _mobile_blocked(root, "ios", generated.stderr[-2000:])
+
+    xcodebuild = shutil.which("xcodebuild")
+    if not xcodebuild:
+        return _mobile_blocked(root, "ios", "xcodebuild is required to build the unsigned IPA")
+
+    with tempfile.TemporaryDirectory() as derived:
+        build = subprocess.run(
+            [
+                xcodebuild,
+                "-project",
+                str(project_file),
+                "-scheme",
+                "VeilNodeiOS",
+                "-configuration",
+                "Release",
+                "-sdk",
+                "iphoneos",
+                "-destination",
+                "generic/platform=iOS",
+                "-derivedDataPath",
+                derived,
+                "CODE_SIGNING_ALLOWED=NO",
+                "CODE_SIGN_IDENTITY=",
+                "CODE_SIGNING_REQUIRED=NO",
+                "build",
+            ],
+            cwd=project_dir,
+            text=True,
+            capture_output=True,
+        )
+        if build.returncode != 0:
+            return {
+                "package": None,
+                "type": "ipa",
+                "signing": "unsigned",
+                "status": "blocked",
+                "source_present": True,
+                "reason": _summarize_failure(build.stdout + build.stderr),
+            }
+
+        app = Path(derived) / "Build/Products/Release-iphoneos/VeilNode.app"
+        if not app.exists():
+            return _mobile_blocked(root, "ios", "xcodebuild finished but did not produce VeilNode.app")
+        target = dist / "VeilNode-iOS-iPadOS-unsigned.ipa"
+        if target.exists():
+            target.unlink()
+        with tempfile.TemporaryDirectory() as payload_dir:
+            payload = Path(payload_dir) / "Payload"
+            payload.mkdir()
+            shutil.copytree(app, payload / "VeilNode.app")
+            shutil.make_archive(str(target.with_suffix("")), "zip", payload_dir)
+            Path(str(target.with_suffix("")) + ".zip").rename(target)
+    return {
+        "package": str(target),
+        "type": "ipa",
+        "signing": "unsigned",
+        "status": "built",
+        "note": "Unsigned IPA. Cannot install on stock iOS without a sideload tool (AltStore / Sideloadly) or a jailbroken device.",
     }
 
 
